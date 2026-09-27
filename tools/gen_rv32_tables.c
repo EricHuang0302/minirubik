@@ -38,6 +38,36 @@ static void print_u8(const char *name, const uint8_t *values, size_t count)
     puts("};\n");
 }
 
+static void print_asm_u16(const char *name, const uint16_t *values,
+                          size_t rows, size_t width)
+{
+    for (size_t row = 0; row < rows; ++row) {
+        printf("%s_%zu:\n", name, row);
+        for (size_t col = 0; col < width; col += 12) {
+            fputs("    .half ", stdout);
+            for (size_t i = col; i < width && i < col + 12; ++i)
+                printf("%s%u", i == col ? "" : ", ",
+                       (unsigned) values[row * width + i]);
+            putchar('\n');
+        }
+    }
+    printf("    .align 2\n%s_rows:\n    .word ", name);
+    for (size_t row = 0; row < rows; ++row)
+        printf("%s%s_%zu", row ? ", " : "", name, row);
+    putchar('\n');
+}
+
+static void print_asm_u8(const char *name, const uint8_t *values, size_t count)
+{
+    printf("%s:\n", name);
+    for (size_t col = 0; col < count; col += 24) {
+        fputs("    .byte ", stdout);
+        for (size_t i = col; i < count && i < col + 24; ++i)
+            printf("%s%u", i == col ? "" : ", ", (unsigned) values[i]);
+        putchar('\n');
+    }
+}
+
 static int fill_distances(uint8_t *distance, uint16_t *queue, size_t count,
                           uint16_t *next)
 {
@@ -58,8 +88,10 @@ static int fill_distances(uint8_t *distance, uint16_t *queue, size_t count,
     return tail == count;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc > 2 || (argc == 2 && strcmp(argv[1], "--asm")))
+        return 2;
     state_t state;
     for (uint8_t move = 0; move < MOVES; ++move) {
         for (uint16_t rank = 0; rank < PERMUTATIONS; ++rank) {
@@ -83,16 +115,25 @@ int main(void)
         return 1;
     }
 
-    puts("/* Generated from solver.c by tools/gen_rv32_tables.c. */");
-    puts("#ifndef RV32_TABLES_H");
-    puts("#define RV32_TABLES_H");
-    puts("#include <stdint.h>\n");
-    print_u16("perm_next", &perm_next[0][0], MOVES * PERMUTATIONS,
-              PERMUTATIONS);
-    print_u16("ori_next", &ori_next[0][0], MOVES * ORIENTATIONS,
-              ORIENTATIONS);
-    print_u8("perm_distance", perm_distance, PERMUTATIONS);
-    print_u8("ori_distance", ori_distance, ORIENTATIONS);
-    puts("#endif");
+    if (argc == 2) {
+        puts(".data");
+        puts("    .align 1");
+        print_asm_u16("perm_next", &perm_next[0][0], MOVES, PERMUTATIONS);
+        print_asm_u16("ori_next", &ori_next[0][0], MOVES, ORIENTATIONS);
+        print_asm_u8("perm_distance", perm_distance, PERMUTATIONS);
+        print_asm_u8("ori_distance", ori_distance, ORIENTATIONS);
+    } else {
+        puts("/* Generated from solver.c by tools/gen_rv32_tables.c. */");
+        puts("#ifndef RV32_TABLES_H");
+        puts("#define RV32_TABLES_H");
+        puts("#include <stdint.h>\n");
+        print_u16("perm_next", &perm_next[0][0], MOVES * PERMUTATIONS,
+                  PERMUTATIONS);
+        print_u16("ori_next", &ori_next[0][0], MOVES * ORIENTATIONS,
+                  ORIENTATIONS);
+        print_u8("perm_distance", perm_distance, PERMUTATIONS);
+        print_u8("ori_distance", ori_distance, ORIENTATIONS);
+        puts("#endif");
+    }
     return ferror(stdout) ? 1 : 0;
 }

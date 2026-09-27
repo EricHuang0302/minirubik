@@ -28,6 +28,17 @@ tools/gen_rv32_tables: tools/gen_rv32_tables.c solver.c
 rv32_tables.h: tools/gen_rv32_tables
 	./tools/gen_rv32_tables >$@.tmp && mv $@.tmp $@
 
+rv32_tables.s: tools/gen_rv32_tables
+	./tools/gen_rv32_tables --asm >$@.tmp && mv $@.tmp $@
+
+rv32_solver.s: rv32_solver_core.s rv32_tables.s
+	$(CC) -E -P -x assembler-with-cpp -DRENDER=0 rv32_solver_core.s -o $@.tmp && \
+		cat rv32_tables.s >>$@.tmp && mv $@.tmp $@
+
+rv32_solver_gui.s: rv32_solver_core.s rv32_tables.s
+	$(CC) -E -P -x assembler-with-cpp -DRENDER=1 rv32_solver_core.s -o $@.tmp && \
+		cat rv32_tables.s >>$@.tmp && mv $@.tmp $@
+
 rv32_c: rv32_c.c rv32_tables.h
 	$(CC) $(CFLAGS) $< -o $@
 

@@ -7,3 +7,6 @@ rv32_c
 tools/gen_rv32_tables
 tools/check_rv32_c
 rv32_tables.h.tmp
+rv32_tables.s
+rv32_tables.s.tmp
+rv32_solver.s.tmp
