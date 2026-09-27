@@ -12,7 +12,7 @@ VECTORS := tests/solutions.txt
 INVALID_STATES := 1234567111111 123456711111111 02345671111111 82345671111111 \
 	12345671111110 12345671111114 1234567111111a 11345671111111 12345671111112
 
-.PHONY: all check prove clean indent
+.PHONY: all check check-rv32-c prove clean indent
 
 all: solver mini
 
@@ -21,6 +21,21 @@ solver: solver.c
 
 mini: mini.c
 	$(CC) $(CFLAGS) $< -o $@
+
+tools/gen_rv32_tables: tools/gen_rv32_tables.c solver.c
+	$(CC) $(CFLAGS) $< -o $@
+
+rv32_tables.h: tools/gen_rv32_tables
+	./tools/gen_rv32_tables >$@.tmp && mv $@.tmp $@
+
+rv32_c: rv32_c.c rv32_tables.h
+	$(CC) $(CFLAGS) $< -o $@
+
+tools/check_rv32_c: tools/check_rv32_c.c rv32_c.c rv32_tables.h
+	$(CC) $(CFLAGS) $< -o $@
+
+check-rv32-c: rv32_c tools/check_rv32_c
+	./tools/check_rv32_c
 
 check: solver mini $(VECTORS)
 	./solver --self-test

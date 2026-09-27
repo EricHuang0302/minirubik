@@ -3,3 +3,7 @@
 *.swp
 solver
 mini
+rv32_c
+tools/gen_rv32_tables
+tools/check_rv32_c
+rv32_tables.h.tmp

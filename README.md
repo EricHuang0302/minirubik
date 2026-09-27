@@ -51,6 +51,23 @@ eight times the runtime and three times the memory for its brevity.
 The 14-digit argument describes the scramble and the printed line is the
 solution. Both formats are explained below.
 
+### C prototype for the RV32I assignment
+
+```sh
+make rv32_c
+./rv32_c 21345671111111
+make check-rv32-c  # exhaustive check; takes several minutes
+```
+
+`rv32_c.c` keeps only the nine move transitions for permutation and orientation
+and their two exact projected-distance tables. `make rv32_c` generates those read-only
+tables from `solver.c` into `rv32_tables.h`; together they occupy 109,611 bytes.
+The solver uses an explicit stack and iterative-deepening A* search, with no
+heap or recursion. The exhaustive host check compares all 3,674,160 states
+against a full BFS oracle and applies every returned path to verify it solves
+the cube. This is the C design for a later RV32I translation, not a Ripes
+assembly program.
+
 ### Reading the 14-digit input
 
 The program receives one 14-digit code with no spaces. For explanation, split
