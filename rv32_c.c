@@ -1,12 +1,14 @@
 #include <stdint.h>
+#if !defined(RV32_C_NO_MAIN) && !defined(RV32_FREESTANDING)
 #include <stdio.h>
+#endif
 
 #include "rv32_tables.h"
 
 enum { CUBIES = 7, MAX_DEPTH = 11, MOVES = 9 };
 
 static const uint8_t move_face[MOVES] = {0, 0, 0, 1, 1, 1, 2, 2, 2};
-#ifndef RV32_C_NO_MAIN
+#if !defined(RV32_C_NO_MAIN) && !defined(RV32_FREESTANDING)
 static const char *const move_name[MOVES] = {"R", "R2", "R'", "B", "B2",
                                             "B'", "D", "D2", "D'"};
 #endif
@@ -102,17 +104,30 @@ static int rv32_solve(uint16_t start_p, uint16_t start_o,
     return -1;
 }
 
-#ifndef RV32_C_NO_MAIN
-int main(int argc, char **argv)
+/* Freestanding entry point: -2 means invalid input; -1 means no solution. */
+int rv32_solve_input(const char *input, uint8_t path[MAX_DEPTH],
+                     uint32_t *expanded)
 {
     uint16_t p, o;
+    if (!rv32_parse(input, &p, &o))
+        return -2;
+    return rv32_solve(p, o, path, expanded);
+}
+
+#if !defined(RV32_C_NO_MAIN) && !defined(RV32_FREESTANDING)
+int main(int argc, char **argv)
+{
     uint8_t path[MAX_DEPTH];
     uint32_t expanded;
-    if (argc != 2 || !rv32_parse(argv[1], &p, &o)) {
+    if (argc != 2) {
         fputs("usage: rv32_c PPPPPPPOOOOOOO\n", stderr);
         return 2;
     }
-    int length = rv32_solve(p, o, path, &expanded);
+    int length = rv32_solve_input(argv[1], path, &expanded);
+    if (length == -2) {
+        fputs("usage: rv32_c PPPPPPPOOOOOOO\n", stderr);
+        return 2;
+    }
     if (length < 0) {
         fputs("no solution within 11 moves\n", stderr);
         return 1;

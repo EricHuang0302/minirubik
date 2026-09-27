@@ -68,6 +68,19 @@ against a full BFS oracle and applies every returned path to verify it solves
 the cube. This is the C design for a later RV32I translation, not a Ripes
 assembly program.
 
+The search core also compiles without a C library for the RV32I target:
+
+```sh
+riscv64-elf-gcc -O2 -ffreestanding -DRV32_FREESTANDING \
+  -march=rv32i -mabi=ilp32 -c rv32_c.c -o /tmp/rv32_c.o
+riscv64-elf-size -A /tmp/rv32_c.o
+```
+
+With GCC 16.2.0, the object has 109,628 bytes of `.rodata`, zero `.data` and
+`.bss`, and no unresolved symbols or multiply/divide helper calls. The host
+command-line interface is excluded in this build; `rv32_solve_input` is the
+freestanding entry point.
+
 ### Reading the 14-digit input
 
 The program receives one 14-digit code with no spaces. For explanation, split

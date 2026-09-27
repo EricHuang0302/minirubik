@@ -1,4 +1,5 @@
 /* Host-only exhaustive oracle for the small-table C solver. */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
