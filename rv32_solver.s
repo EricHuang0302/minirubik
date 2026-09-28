@@ -1,6 +1,7 @@
  # Mini-Rubik: change input_state to any valid 14-character state.
  # Build with: make rv32_solver.s rv32_solver_gui.s
 .text
+.globl start
 start:
     # Parse seven distinct cubie digits into pieces[].
     la t0, input_state

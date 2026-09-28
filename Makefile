@@ -1,5 +1,6 @@
 CC ?= cc
 CFLAGS ?= -O3 -std=c99 -Wall -Wextra -Wpedantic
+RISCV_CC ?= riscv64-elf-gcc
 FRAMA_C ?= frama-c
 CLANG_FORMAT := $(shell command -v clang-format-20 2>/dev/null || \
 	command -v clang-format 2>/dev/null)
@@ -41,6 +42,11 @@ rv32_solver_gui.s: rv32_solver_core.s rv32_tables.s
 
 rv32_c: rv32_c.c rv32_tables.h
 	$(CC) $(CFLAGS) $< -o $@
+
+rv32_c_ripes.elf: rv32_c.c rv32_tables.h tools/rv32_c_ripes.c
+	$(RISCV_CC) -O2 -march=rv32i -mabi=ilp32 -ffreestanding -fno-builtin \
+		-DRV32_FREESTANDING -nostdlib -Wl,-e,_start -Wl,-Ttext,0 \
+		rv32_c.c tools/rv32_c_ripes.c -lgcc -o $@
 
 tools/check_rv32_c: tools/check_rv32_c.c rv32_c.c rv32_tables.h
 	$(CC) $(CFLAGS) $< -o $@

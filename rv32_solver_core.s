@@ -1,6 +1,7 @@
 # Mini-Rubik: change input_state to any valid 14-character state.
 # Build with: make rv32_solver.s rv32_solver_gui.s
 .text
+.globl start
 
 start:
     # Parse seven distinct cubie digits into pieces[].
@@ -329,6 +330,12 @@ render_copy:
 # Six faces × four stickers. facelet_pos and facelet_axis select a physical
 # corner and one of its three cyclic sticker axes; cubie_axes gives its color.
 draw_net:
+    li t0, LED_MATRIX_0_WIDTH
+    li t1, 35
+    bltu t0, t1, invalid_output   # the net needs columns 0..34
+    li t0, LED_MATRIX_0_HEIGHT
+    li t1, 20
+    bltu t0, t1, invalid_output   # the six-face net needs rows 0..19
     li a0, 0                      # sticker index, 0..23
     la a1, facelet_pos
     la a2, facelet_axis
