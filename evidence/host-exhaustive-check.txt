@@ -1,0 +1,6 @@
+./tools/check_rv32_c
+H1-H3/T5 passed: 3674160 states, diameter 11, depth-11 states 2644
+H2 passed: permutation max 7, orientation max 6
+static table bytes: 109611 / 131072
+depth-11 worst expanded nodes: 106635 (rank 2437047)
+wall_seconds=203.73

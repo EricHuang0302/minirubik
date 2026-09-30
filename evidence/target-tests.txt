@@ -1,0 +1,49 @@
+[solved] state=12345671111111 model=RV32_ISS
+Program exited with code: 0
+===== cycles
+586
+===== instructions retired
+586
+
+[solved] state=12345671111111 model=RV32_5S
+Program exited with code: 0
+===== cycles
+783
+===== instructions retired
+586
+
+[one_turn] state=25314672313211 model=RV32_ISS
+R'
+
+Program exited with code: 0
+===== cycles
+784
+===== instructions retired
+784
+
+[one_turn] state=25314672313211 model=RV32_5S
+R'
+
+Program exited with code: 0
+===== cycles
+1041
+===== instructions retired
+784
+
+[sample] state=21345671111111 model=RV32_ISS
+R B' D2 R' B R' B' R D2 R B
+
+Program exited with code: 0
+===== cycles
+17215301
+===== instructions retired
+17215301
+
+[worst] state=54721631111111 model=RV32_ISS
+B2 R' B R' D' B R2 B R B D'
+
+Program exited with code: 0
+===== cycles
+47074059
+===== instructions retired
+47074059

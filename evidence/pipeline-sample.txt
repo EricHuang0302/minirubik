@@ -1,0 +1,9 @@
+R B' D2 R' B R' B' R D2 R B
+
+Program exited with code: 0
+===== cycles
+21896137
+===== instructions retired
+17215301
+===== wall-clock model execution time (ms)
+56021

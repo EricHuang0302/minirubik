@@ -1,5 +1,7 @@
 # Mini-Rubik on RV32I: Development Notes
 
+Measurements use Ripes `v2.2.6-106-g5b8a616` on this Mac (binary SHA-256 `bea887fcf020c1dda1f44177c19c27a13f3b93c625b17194ac37e3d421a34fc4`). The fork started from upstream commit `3811ad0a87bd490e45099c3cb179ec33caf46cb5`.
+
 ## The original C solver as a reference
 
 The starting point for this assignment is [`solver.c` at upstream commit `3811ad0`](https://github.com/sysprog21/minirubik/blob/3811ad0a87bd490e45099c3cb179ec33caf46cb5/solver.c). Its principal strength is that it computes an exact answer for every valid cube state. The program starts at the solved cube and performs breadth-first search (BFS) over the entire reachable state space. All nine allowed turns have equal cost in the half-turn metric: `R`, `R2`, and `R'`, for example, each count as one move. BFS therefore discovers states in increasing order of solution length.
@@ -115,7 +117,7 @@ The host checker computed exact BFS distances for every one of the
 distance table ranges and solved entries (H2), and the solver's exact path
 length against BFS everywhere (H3). It also replayed each returned path to
 solved (T5 on the host). H4 does not apply because no packed accessor is used.
-The current exhaustive host check passed on September 30, 2026. The host checker
+The current exhaustive host check passed on September 30, 2026, in 203.73 seconds of wall-clock time. The host checker
 found the maximum number of expanded IDA* nodes at input
 `54721631111111` (permutation/orientation rank 2,437,047): 106,635 nodes.
 
@@ -160,6 +162,8 @@ does not end at rank `(0,0)`.
 Measurements use the pinned Ripes `RV32_ISS --iret` and renderer-off linked
 `.text`, with the same input for each row:
 
+For the assembly size, GNU `ld --no-relax` preserves the instruction sequence that Ripes assembles from the source: both the source and that linked ELF retire 17,215,301 instructions on the sample, and the ELF's `.text` is 880 bytes. The C comparison uses the Makefile's default optimized link, giving 1,148 bytes of `.text`. A default relaxed link of the assembly changed its Ripes execution count, so it is not the binary used for the instruction figures below.
+
 | Build | Sample `21345671111111` | Hardest `54721631111111` | `.text` |
 | --- | ---: | ---: | ---: |
 | Initial assembly search loop | 17,995,131 | 49,206,635 | 888 B |
@@ -169,10 +173,7 @@ Measurements use the pinned Ripes `RV32_ISS --iret` and renderer-off linked
 The refinement removes a redundant address calculation and byte load from
 each visit to `search_choice`. On a depth-first search those visits repeat
 often, so two static instructions removed from the loop save millions of
-retired instructions. An earlier run of all 2,644 exact-distance-11 states on `RV32_ISS`
-recorded matching paths and a maximum of 47,074,059 instructions at
-`54721631111111`. The per-state output from that run was not retained;
-the present run independently checked the host-identified hardest state. This is below the 50,000,000 worst-case limit.
+retired instructions. The current run exercised **all 2,644 exact-distance-11 states** on `RV32_ISS` with rendering off. Every case exited successfully and returned 11 moves. The smallest count was 10,370,157, the median was 14,110,000, and the maximum was **47,074,059** instructions at `54721631111111`. All are below the 50,000,000 worst-case limit. The full per-state log is retained in `evidence/depth11-rv32-iss.tsv` in the fork; the run took 1,708.5 seconds.
 
 The sample returned `R B' D2 R' B R' B' R D2 R B`, an 11-move solution.
 The solved state `12345671111111` returns the empty path, and
@@ -217,7 +218,13 @@ signal-level screenshot and step trace remain to be captured.**
 
 
 :::info
-Current CLI evidence for the solved state, one-turn state, required 11-move vector, and host-identified hardest state is saved locally in `evidence/target-tests.txt`. The required vector also ran in `RV32_5S` with 21,896,137 cycles.
+Current CLI evidence for the solved state, one-turn state, and required 11-move vector is saved in `evidence/target-tests.txt`; the exhaustive distance-11 results are in [`evidence/depth11-rv32-iss.tsv`](https://github.com/EricHuang0302/minirubik/blob/codex/hw1-c-solver/evidence/depth11-rv32-iss.tsv). The required vector also ran in `RV32_5S` with 21,896,137 cycles.
 :::
+
+## Development process and remaining visual evidence
+
+The first Ripes memory estimate was exploratory. The user then ran the 64 KiB and 1 MiB probes and supplied terminal captures; I replaced the earlier slope and speed estimates with those observed numbers. This changed the host-memory projection, but not the design conclusion: a complete BFS table is much too large for the target. The C refactor made the algorithm easier to read, yet it also changed GCC's generated instruction count, so I rebuilt and remeasured the compiler comparison before reporting it. I reconstructed the earlier two-instruction search-loop reload in a temporary assembly copy to make the refinement table reproducible rather than relying only on an old note. The exhaustive host check and target CLI cases were rerun after these edits.
+
+The GUI build assembles, but a visible LED animation and a Ripes pipeline signal screenshot have not yet been observed in this session. Those checks should be completed before this note is submitted as final evidence.
 
 *AI assistance: OpenAI Codex drafted this English note, prepared the memory probe, and generated or revised the C and RV32I implementations. The stage-1 numbers were calculated from terminal screenshots supplied by the user; the later checks were run by Codex. The student should independently review the design and interpretation before submission.*
