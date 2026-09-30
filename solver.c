@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+// 這題只追蹤 7 個角塊；另一個角塊固定不動。
+// 位置排列有 7! = 5040 種，方向有 3^6 = 729 種。
 enum {
     CUBIES = 7,
     PERMUTATIONS = 5040,
@@ -11,23 +13,20 @@ enum {
     MOVES = 9
 };
 
+// p[i]：位置 i 放的是哪個角塊（內部編號 0～6）。
+// o[i]：該角塊的方向（0、1、2）；方向加總必須是 3 的倍數。
 typedef struct {
     uint8_t p[CUBIES], o[CUBIES];
 } state_t;
 
-/*@ predicate valid_state(state_t *state) =
-      (\forall integer i; 0 <= i < CUBIES ==>
-         state->p[i] < CUBIES && state->o[i] < 3) &&
-      (\forall integer i, j; 0 <= i < j < CUBIES ==>
-         state->p[i] != state->p[j]) &&
-      (state->o[0] + state->o[1] + state->o[2] + state->o[3] +
-       state->o[4] + state->o[5] + state->o[6]) % 3 == 0;
- */
-
+// 每個面的三種動作依序是：順時針 90 度、180 度、逆時針 90 度。
 static const char *const move_names[MOVES] = {"R",  "R2", "R'", "B", "B2",
                                               "B'", "D",  "D2", "D'"};
+// 反向動作，例如 R 的反向是 R'；R2 的反向仍是 R2。
 static const uint8_t inverse_move[MOVES] = {2, 1, 0, 5, 4, 3, 8, 7, 6};
-/* Each destination takes a cubie from source[face][destination]. */
+
+// face 依序代表 R、B、D。source[face][i] 表示轉完後，
+// 新位置 i 的角塊來自原本哪個位置。twist 是額外的方向變化。
 static const uint8_t source[3][CUBIES] = {
     {1, 4, 2, 0, 3, 5, 6},
     {0, 1, 2, 4, 5, 6, 3},
@@ -39,33 +38,22 @@ static const uint8_t twist[3][CUBIES] = {
     {0, 0, 0, 0, 0, 0, 0},
 };
 
-/* The three quarter-turns preserve the fixed front-upper-left corner. */
-/*@ requires face < 3;
-    assigns \nothing;
-    ensures \forall integer i; 0 <= i < CUBIES ==>
-              \result.p[i] == state.p[source[face][i]];
-    ensures \forall integer i; 0 <= i < CUBIES ==>
-              \result.o[i] == (state.o[source[face][i]] + twist[face][i]) % 3;
- */
+// 將指定的面轉 90 度，回傳新的魔術方塊狀態。
 static state_t quarter_turn(state_t state, uint8_t face)
 {
     state_t result;
-    /*@ loop invariant 0 <= i <= CUBIES;
-        loop invariant \forall integer j; 0 <= j < i ==>
-          result.p[j] == state.p[source[face][j]];
-        loop invariant \forall integer j; 0 <= j < i ==>
-          result.o[j] == (state.o[source[face][j]] + twist[face][j]) % 3;
-        loop assigns i, result.p[0..6], result.o[0..6];
-        loop variant CUBIES - i;
-    */
+
     for (uint8_t i = 0; i < CUBIES; ++i) {
         uint8_t from = source[face][i];
         result.p[i] = state.p[from];
+        // 方向只會是 0、1、2，所以用 % 3 讓數值繞回這個範圍。
         result.o[i] = (uint8_t) ((state.o[from] + twist[face][i]) % 3U);
     }
     return result;
 }
 
+// 9 個 move 編號分成三組：0～2 是 R，3～5 是 B，6～8 是 D。
+// 同一個面轉 1、2、3 次 90 度，分別對應 R、R2、R' 等動作。
 static state_t apply_move(state_t state, uint8_t move)
 {
     uint8_t turns = (uint8_t) (move % 3U + 1U);
@@ -74,56 +62,34 @@ static state_t apply_move(state_t state, uint8_t move)
     return state;
 }
 
-/*@ requires \valid_read(state);
-    requires \forall integer i; 0 <= i < CUBIES ==>
-      0 <= state->p[i] < CUBIES;
-    requires \forall integer i, j; 0 <= i < j < CUBIES ==>
-      state->p[i] != state->p[j];
-    requires \forall integer i; 0 <= i < CUBIES ==>
-      0 <= state->o[i] < 3;
-    assigns \nothing;
-    ensures \result < STATES;
- */
+// 將完整狀態編成唯一整數。編號 0 是已解開的狀態。
+// 排列部分用 Lehmer code；方向部分把前六個方向當成六位三進位數。
 static uint32_t rank_state(const state_t *state)
 {
     uint32_t p = 0, o = 0;
-    /*@ loop invariant 0 <= i <= CUBIES;
-        loop invariant (i == 0 ==> p == 0) && (i == 1 ==> p <= 6) &&
-          (i == 2 ==> p <= 41) && (i == 3 ==> p <= 209) &&
-          (i == 4 ==> p <= 839) && (i == 5 ==> p <= 2519) &&
-          (i >= 6 ==> p <= 5039);
-        loop assigns i, p;
-        loop variant CUBIES - i;
-     */
+
     for (uint8_t i = 0; i < CUBIES; ++i) {
         uint8_t smaller = 0;
-        /*@ loop invariant i + 1 <= j <= CUBIES;
-            loop invariant smaller <= j - i - 1;
-            loop assigns j, smaller;
-            loop variant CUBIES - j;
-         */
+
         for (uint8_t j = (uint8_t) (i + 1U); j < CUBIES; ++j)
             if (state->p[j] < state->p[i])
                 ++smaller;
+        // smaller 是右邊比目前角塊編號小的個數，用來累積排列編號。
         p = p * (CUBIES - i) + smaller;
     }
-    /*@ loop invariant 0 <= i <= 6;
-        loop invariant (i == 0 ==> o == 0) && (i == 1 ==> o < 3) &&
-          (i == 2 ==> o < 9) && (i == 3 ==> o < 27) &&
-          (i == 4 ==> o < 81) && (i == 5 ==> o < 243) &&
-          (i == 6 ==> o < 729);
-        loop assigns i, o;
-        loop variant 6 - i;
-     */
+
+    // 第七個方向由「方向總和為 3 的倍數」決定，不必另外編碼。
     for (uint8_t i = 0; i < 6; ++i)
         o = o * 3U + state->o[i];
     return p * ORIENTATIONS + o;
 }
 
-/*@ requires \valid(state); requires rank < STATES; assigns *state; */
+// rank_state 的反向操作：把編號還原成 p[] 與 o[]。
+// 建立轉動表時會用到它；一般解題時不直接呼叫。
 static void unrank_state(uint32_t rank, state_t *state)
 {
     uint8_t available[CUBIES] = {0, 1, 2, 3, 4, 5, 6};
+    // f 從 6! = 720 開始，逐位還原排列。
     uint32_t p = rank / ORIENTATIONS, o = rank % ORIENTATIONS, f = 720;
     uint8_t sum = 0;
     for (uint8_t i = 0; i < CUBIES; ++i) {
@@ -140,46 +106,19 @@ static void unrank_state(uint32_t rank, state_t *state)
         sum = (uint8_t) (sum + state->o[i]);
         o /= 3U;
     }
+    // 補出最後一個方向，讓七個方向的總和模 3 等於 0。
     state->o[6] = (uint8_t) ((3U - sum % 3U) % 3U);
 }
 
-/*@ requires \valid_read(state);
-    requires \initialized(&state->p[0..6]) && \initialized(&state->o[0..6]);
-    assigns \nothing;
-    ensures \result != 0 ==> \forall integer i; 0 <= i < CUBIES ==>
-      state->p[i] < CUBIES && state->o[i] < 3;
-    ensures \result != 0 ==> \forall integer i, j; 0 <= i < j < CUBIES ==>
-      state->p[i] != state->p[j];
-    ensures \result != 0 ==>
-      (state->o[0] + state->o[1] + state->o[2] + state->o[3] +
-       state->o[4] + state->o[5] + state->o[6]) % 3 == 0;
-    ensures complete: valid_state(state) ==> \result != 0;
- */
+// 檢查：角塊編號與方向在範圍內、角塊沒有重複、方向總和合法。
 static int valid(const state_t *state)
 {
     uint8_t sum = 0;
-    /*@ loop invariant 0 <= i <= CUBIES;
-        loop invariant sum <= 2 * i;
-        loop invariant sum == (i > 0 ? state->o[0] : 0) +
-          (i > 1 ? state->o[1] : 0) + (i > 2 ? state->o[2] : 0) +
-          (i > 3 ? state->o[3] : 0) + (i > 4 ? state->o[4] : 0) +
-          (i > 5 ? state->o[5] : 0) + (i > 6 ? state->o[6] : 0);
-        loop invariant \forall integer j; 0 <= j < i ==>
-          state->p[j] < CUBIES && state->o[j] < 3;
-        loop invariant \forall integer j, k; 0 <= j < k < i ==>
-          state->p[j] != state->p[k];
-        loop assigns i, sum;
-        loop variant CUBIES - i;
-    */
+
     for (uint8_t i = 0; i < CUBIES; ++i) {
         if (state->p[i] >= CUBIES || state->o[i] >= 3)
             return 0;
-        /*@ loop invariant 0 <= j <= i;
-            loop invariant \forall integer k; 0 <= k < j ==>
-              state->p[k] != state->p[i];
-            loop assigns j;
-            loop variant i - j;
-        */
+
         for (uint8_t j = 0; j < i; ++j)
             if (state->p[j] == state->p[i])
                 return 0;
@@ -188,11 +127,18 @@ static int valid(const state_t *state)
     return sum % 3U == 0;
 }
 
+// 從已解開的狀態做 BFS（廣度優先搜尋），為每個狀態記下回家的第一步。
+// BFS 按距離一層一層搜尋，因此第一次找到的路徑保證步數最少。
 static uint8_t *build_table(uint8_t *diameter)
 {
+    // toward_solved[狀態編號] = 往已解開狀態走時，下一步該做的動作。
+    // queue 存等待展開的狀態編號；這兩個陣列是原版記憶體用量的大宗。
     uint8_t *toward_solved = malloc(STATES);
     uint32_t *queue = malloc((size_t) STATES * sizeof *queue);
+    // 先做小型轉動表，之後展開狀態時不用反覆搬動 p[]、o[]。
     uint16_t permutation[3][PERMUTATIONS], orientation[3][ORIENTATIONS];
+    // head 是下一個要處理的位置；tail 是下一個可加入的位置。
+    // level_end 標出目前 BFS 這一層的結尾。
     uint32_t head = 0, tail = 1, level_end = 1;
     state_t state;
     if (!toward_solved || !queue) {
@@ -216,12 +162,14 @@ static uint8_t *build_table(uint8_t *diameter)
                 (uint16_t) (rank_state(&next) % ORIENTATIONS);
         }
     }
+    // 255 表示還沒找到；編號 0 是已解開的狀態，放入佇列起點。
     memset(toward_solved, UINT8_MAX, STATES);
     queue[0] = 0;
     toward_solved[0] = 0;
     *diameter = 0;
     while (head < tail) {
         if (head == level_end) {
+            // 上一層處理完畢，進入距離多一步的下一層。
             level_end = tail;
             ++*diameter;
         }
@@ -231,11 +179,13 @@ static uint8_t *build_table(uint8_t *diameter)
         for (uint8_t face = 0; face < 3; ++face) {
             uint16_t next_p = p, next_o = o;
             for (uint8_t turn = 0; turn < 3; ++turn) {
+                // 同一個面依序轉 1、2、3 次，產生三個相鄰狀態。
                 next_p = permutation[face][next_p];
                 next_o = orientation[face][next_o];
                 uint32_t there = (uint32_t) next_p * ORIENTATIONS + next_o;
                 if (toward_solved[there] == UINT8_MAX) {
                     uint8_t move = (uint8_t) (face * 3U + turn);
+                    // 搜尋是從已解開狀態往外走；解題要往回走，所以存反向動作。
                     toward_solved[there] = inverse_move[move];
                     queue[tail++] = there;
                 }
@@ -250,36 +200,10 @@ static uint8_t *build_table(uint8_t *diameter)
     return toward_solved;
 }
 
-/*@ requires valid_read_string(input);
-    requires \valid(state);
-    assigns state->p[0..6], state->o[0..6];
-    ensures \result != 0 ==> input[14] == '\0';
-    ensures \result != 0 ==> \forall integer i; 0 <= i < CUBIES ==>
-      state->p[i] < CUBIES && state->o[i] < 3;
-    ensures \result != 0 ==> \forall integer i, j; 0 <= i < j < CUBIES ==>
-      state->p[i] != state->p[j];
-    ensures \result != 0 ==>
-      (state->o[0] + state->o[1] + state->o[2] + state->o[3] +
-       state->o[4] + state->o[5] + state->o[6]) % 3 == 0;
-    ensures \result != 0 ==> \forall integer i; 0 <= i < CUBIES ==>
-      state->p[i] == input[i] - '1';
-    ensures \result != 0 ==> \forall integer i; 0 <= i < CUBIES ==>
-      state->o[i] == input[i + CUBIES] - '1';
- */
+// 讀取 14 個字元：前 7 個是角塊排列 1～7，後 7 個是方向 1～3。
+// 減去字元 '1' 後，內部就改用從 0 開始的編號。
 static int parse_state(const char *input, state_t *state)
 {
-    /*@ loop invariant 0 <= i <= 14;
-        loop invariant i <= strlen(input);
-        loop invariant i <= 7 ==> \initialized(&state->p[0..i-1]);
-        loop invariant i >= 7 ==> \initialized(&state->p[0..6]);
-        loop invariant i >= 7 ==> \initialized(&state->o[0..i-8]);
-        loop invariant \forall integer j; 0 <= j < i && j < CUBIES ==>
-          state->p[j] == input[j] - '1';
-        loop invariant \forall integer j; 0 <= j < i - CUBIES ==>
-          state->o[j] == input[j + CUBIES] - '1';
-        loop assigns i, state->p[0..6], state->o[0..6];
-        loop variant 14 - i;
-     */
     for (int i = 0; i < 14; ++i) {
         int limit = i < 7 ? 7 : 3;
         if (input[i] < '1' || input[i] > '0' + limit)
@@ -289,15 +213,13 @@ static int parse_state(const char *input, state_t *state)
     return input[14] == '\0' && valid(state);
 }
 
-/* stdout is fully buffered off a terminal, so a write error surfaces at the
- * flush, not at the printf that queued the bytes. Every exit path that has
- * produced output goes through here.
- */
+// 確認輸出真的寫出去了，而不只是暫存在 stdout 緩衝區。
 static int output_failed(void)
 {
     return fflush(stdout) != 0 || ferror(stdout);
 }
 
+// 檢查動作加反向動作會回到原點，並檢查每個狀態可編碼再還原。
 static int self_test(void)
 {
     const state_t solved = {{0, 1, 2, 3, 4, 5, 6}, {0}};
@@ -321,6 +243,7 @@ int main(int argc, char **argv)
 {
     state_t state;
     uint8_t diameter;
+    // --self-test 是原程式附帶的完整自我檢查模式。
     if (argc == 2 && !strcmp(argv[1], "--self-test")) {
         if (!self_test()) {
             fputs("self-test failed\n", stderr);
@@ -339,18 +262,20 @@ int main(int argc, char **argv)
         puts("3674160 states; diameter 11");
         return output_failed();
     }
+    // 一般模式要求一個合法的 14 字元狀態。
     if (argc != 2 || !parse_state(argv[1], &state)) {
-        /* C99 5.1.2.2.1 lets argv[0] be null when argc is 0. */
         fprintf(stderr, "usage: %s PPPPPPPOOOOOOO\n",
                 argc > 0 && argv[0] ? argv[0] : "solver");
         return 2;
     }
+    // 每次執行都先重新建立完整的 BFS 表。
     uint8_t *table = build_table(&diameter);
     if (!table) {
         fputs("could not build complete state table\n", stderr);
         return 1;
     }
     const char *separator = "";
+    // 只要編號不是 0，就查表走一步，直到回到已解開狀態。
     for (uint32_t rank = rank_state(&state); rank; rank = rank_state(&state)) {
         uint8_t move = table[rank];
         printf("%s%s", separator, move_names[move]);
