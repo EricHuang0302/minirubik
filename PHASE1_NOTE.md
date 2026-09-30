@@ -202,8 +202,11 @@ selects each physical corner and one of its three sticker axes. The cyclic
 axis order was checked against `solver.c`'s `R`, `B`, and `D` source and twist
 maps. No animation frame is prerecorded. An earlier CLI test replaced the peripheral with an 875-word RAM buffer,
 ran the sample path, and compared every final pixel against the solved
-net; it passed. The test output was not retained with this draft. **The actual I/O-tab display still
-needs visual confirmation in Ripes.**
+net; it passed. The test output was not retained with this draft. I also ran
+the GUI assembly in Ripes with an instantiated 35×25 LED Matrix. Its I/O tab
+showed the final unfolded net in six distinct colors after the sample query
+completed. A saved image and a visible intermediate move frame are still
+needed for the submitted note.
 
 For an instruction-level walkthrough, consider `lhu t5, 0(t4)` in the
 search loop. IF fetches its instruction word at PC. ID decodes the load and
@@ -213,8 +216,12 @@ that rank into `t5`; register write enable is asserted and the writeback
 multiplexer selects memory data. The next `slli` or `add` uses the new rank,
 so a pipelined model must respect this load-use dependency before the next
 table access. `sh` and `sb` later update the explicit search stack; they
-write memory at MEM rather than a destination register at WB. **A GUI
-signal-level screenshot and step trace remain to be captured.**
+write memory at MEM rather than a destination register at WB. I loaded the
+renderer-off assembly into the Ripes five-stage RV32I model, set a breakpoint
+at `0x230` (`lhu t5, 0(t4)`), and advanced the clock. The instruction passed
+through MEM at cycle 771 and WB at cycle 772; after cycle 773, `t5` held
+`0x0000002d`. The Ripes instruction list showed the following `slli` in the
+pipeline. A saved GUI screenshot is still needed for the submitted note.
 
 
 :::info
@@ -225,6 +232,9 @@ Current CLI evidence for the solved state, one-turn state, and required 11-move 
 
 The first Ripes memory estimate was exploratory. The user then ran the 64 KiB and 1 MiB probes and supplied terminal captures; I replaced the earlier slope and speed estimates with those observed numbers. This changed the host-memory projection, but not the design conclusion: a complete BFS table is much too large for the target. The C refactor made the algorithm easier to read, yet it also changed GCC's generated instruction count, so I rebuilt and remeasured the compiler comparison before reporting it. I reconstructed the earlier two-instruction search-loop reload in a temporary assembly copy to make the refinement table reproducible rather than relying only on an old note. The exhaustive host check and target CLI cases were rerun after these edits.
 
-The GUI build assembles, but a visible LED animation and a Ripes pipeline signal screenshot have not yet been observed in this session. Those checks should be completed before this note is submitted as final evidence.
+The GUI build assembles, and the five-stage `lhu` step trace and final LED
+Matrix net have been observed in Ripes. A visible intermediate move frame and
+saved GUI screenshots still need to be checked before this note is submitted
+as final evidence.
 
 *AI assistance: OpenAI Codex drafted this English note, prepared the memory probe, and generated or revised the C and RV32I implementations. The stage-1 numbers were calculated from terminal screenshots supplied by the user; the later checks were run by Codex. The student should independently review the design and interpretation before submission.*
