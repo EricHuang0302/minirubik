@@ -207,10 +207,14 @@ the GUI assembly in Ripes with an instantiated 35×25 LED Matrix. Its I/O tab
 showed the final unfolded net in six distinct colors after the sample query
 completed. The screenshot below records that final display. The LED widget
 was too narrow at its former 8-pixel setting, so the right edge of the blue
-Back face is clipped in this capture. A full-width capture and a visible
-intermediate move frame are still needed.
+Back face is clipped in this capture. The next screenshot records the
+scrambled input before the first move, using a 6-pixel LED setting that fits
+all six faces. A visible intermediate move frame and a full-width final
+frame are still needed.
 
 ![Ripes LED Matrix after the sample solution; the blue face is partly clipped by the widget](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/ripes-led-final.png)
+
+![Ripes LED Matrix showing the scrambled sample input before the first move](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/ripes-led-initial.png)
 
 For an instruction-level walkthrough, consider `lhu t5, 0(t4)` in the
 search loop. IF fetches its instruction word at PC. ID decodes the load and
@@ -236,10 +240,10 @@ Current CLI evidence for the solved state, one-turn state, and required 11-move 
 
 The first Ripes memory estimate was exploratory. The user then ran the 64 KiB and 1 MiB probes and supplied terminal captures; I replaced the earlier slope and speed estimates with those observed numbers. This changed the host-memory projection, but not the design conclusion: a complete BFS table is much too large for the target. The C refactor made the algorithm easier to read, yet it also changed GCC's generated instruction count, so I rebuilt and remeasured the compiler comparison before reporting it. I reconstructed the earlier two-instruction search-loop reload in a temporary assembly copy to make the refinement table reproducible rather than relying only on an old note. The exhaustive host check and target CLI cases were rerun after these edits.
 
-The GUI build assembles, and the five-stage `lhu` step trace and final LED
-Matrix net have been observed in Ripes. The final LED screenshot is saved;
-a visible intermediate move frame, a full-width final frame, and a pipeline
-screenshot still need to be checked before this note is submitted as final
-evidence.
+The GUI build assembles, and the five-stage `lhu` step trace, scrambled input
+net, and final LED Matrix net have been observed in Ripes. The input and final
+LED screenshots are saved; a visible intermediate move frame, a full-width
+final frame, and a pipeline screenshot still need to be checked before this
+note is submitted as final evidence.
 
 *AI assistance: OpenAI Codex drafted this English note, prepared the memory probe, and generated or revised the C and RV32I implementations. The stage-1 numbers were calculated from terminal screenshots supplied by the user; the later checks were run by Codex. The student should independently review the design and interpretation before submission.*
