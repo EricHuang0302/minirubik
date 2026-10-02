@@ -121,6 +121,27 @@ The current exhaustive host check passed on September 30, 2026, in 203.73 second
 found the maximum number of expanded IDA* nodes at input
 `54721631111111` (permutation/orientation rank 2,437,047): 106,635 nodes.
 
+### A one-move IDA* walkthrough
+
+For input `25314672313211`, the parser produces `P=1104` and `O=426`.
+Both projected distance entries equal 1, so the first bound is
+`limit=max(1,1)=1`. At the root, `depth=0` and `depth+h=1`, so the
+search may try a move. The following values were read from the same tables
+used by `rv32_c.c`:
+
+| Candidate | Child `(P,O)` | Child `h` | `depth+h` | Decision at bound 1 |
+| --- | --- | ---: | ---: | --- |
+| `R` | `(3294,0)` | 1 | 2 | Prune and return to the root |
+| `R2` | `(2190,426)` | 1 | 2 | Prune and return to the root |
+| `R'` | `(0,0)` | 0 | 1 | Return the one-move solution |
+
+A pruned child is discarded by decreasing `depth`; the root's
+`next_move[0]` remembers which candidate comes next. No complete visited-state
+set is retained. For the required 11-move input, the initial bound is 7;
+unsuccessful searches at bounds 7, 8, 9, and 10 precede the successful
+search at 11. This is IDA*: a depth-first search repeated under increasing
+`depth+h` bounds. It does not maintain an A* priority queue.
+
 ## Stage 3: C refinement before assembly
 
 The C implementation is [`rv32_c.c`](https://github.com/EricHuang0302/minirubik/blob/codex/hw1-c-solver/rv32_c.c). It ranks the input only once,
@@ -158,6 +179,119 @@ projected ranks in 16-bit depth stacks, obtains move-row pointers by 32-bit
 loads, and uses `lhu` for each transition. On a found path it replays all
 moves through those same transition tables and refuses to print a path that
 does not end at rank `(0,0)`.
+
+### From C expressions to RV32I operations
+
+The assembly implements the same algorithm as the readable C solver. The
+compiler-generated C build is a comparison measurement; the maintained
+assembly is `rv32_solver_core.s`. The Makefile packages this source and its
+data for Ripes; it does not translate the C search into this assembly.
+
+The orientation parser updates a base-three number in C:
+
+```c
+*ori = (uint16_t) (*ori * 3 + twists[i]);
+```
+
+In the assembly parser, `s1` holds the accumulated orientation rank and
+`t5` holds the next twist. Multiplication by three becomes a shift and two
+additions:
+
+```asm
+slli a3, s1, 1
+add s1, s1, a3
+add s1, s1, t5
+```
+
+The first instruction computes twice the old value in a temporary register.
+The second adds the old value, and the third adds the new base-three digit.
+This needs no multiplication extension.
+
+The pruning condition in C is:
+
+```c
+if (depth + remaining > limit)
+    goto backtrack;
+```
+
+At this point in the assembly, `t4` and `t5` are the current permutation and
+orientation ranks. The following instructions load their byte distances,
+select the larger distance, add the current depth, and branch if the bound
+is smaller than that sum:
+
+```asm
+add t6, s8, t4
+lbu t6, 0(t6)
+add a3, s9, t5
+lbu a3, 0(a3)
+bgeu t6, a3, heuristic_ready
+mv t6, a3
+heuristic_ready:
+add t6, t6, s3
+bltu s2, t6, search_backtrack
+```
+
+`lbu` zero-extends an unsigned byte. The array entries already give the
+lower bounds, so this loop does not recompute cube distances.
+
+The permutation update is a two-dimensional table access in C:
+
+```c
+perm_stack[depth + 1] = perm_next[move][perm_stack[depth]];
+```
+
+The assembly first selects a move row through a table of four-byte pointers.
+It then loads the current two-byte rank from the depth stack, indexes the
+selected row, and stores the resulting rank in the next depth slot:
+
+```asm
+slli t0, t1, 2
+add t2, s10, t0
+lw t2, 0(t2)
+```
+
+Here `t1` is the move index, so shifting by two gives its pointer-table byte
+offset. After the orientation row pointer is also obtained, the permutation
+part continues:
+
+```asm
+slli t3, s3, 1
+add t4, s4, t3
+lhu t5, 0(t4)
+slli t5, t5, 1
+add t2, t2, t5
+lhu t2, 0(t2)
+addi t4, t4, 2
+sh t2, 0(t4)
+```
+
+The first `lhu` reads `perm_stack[depth]`; the second reads a transition-table
+entry. Both use unsigned halfwords, but their roles are different. Shifting
+by one converts an element index into a two-byte offset. `sh` stores only
+the low 16 bits in `perm_stack[depth+1]`. Orientation uses the same pattern.
+Backtracking changes `s3` by minus one and resumes the parent's saved move
+cursor, rather than undoing all cube stickers or calling a recursive function.
+
+### Registers and the explicit depth stack
+
+These assignments describe the search phase. Later output code reuses
+`s0` and `s1`, and temporary registers change roles between fragments.
+
+| Assembly registers | C meaning during search | Representation |
+| --- | --- | --- |
+| `s0`, `s1` | `start_perm`, `start_ori` | Root ranks retained for each new bound and path replay |
+| `s2`, `s3` | `limit`, `depth` | Current bound and number of moves already taken |
+| `s4`, `s5` | `perm_stack`, `ori_stack` base addresses | 12 unsigned halfwords each: 24 B per array |
+| `s6`, `s7` | `next_move`, `path` base addresses | 12 B of move cursors and 11 B of chosen moves |
+| `s8`, `s9` | `perm_distance`, `ori_distance` base addresses | One byte per projected rank |
+| `s10`, `s11` | `perm_next_rows`, `ori_next_rows` base addresses | Nine four-byte row pointers per component |
+| `t0`, `t1` at `search_choice` | Address of `next_move[depth]`, candidate move | Reused rather than loaded again |
+
+The search depth arrays occupy `24+24+12+11=71` bytes. These arrays are
+separate from the architectural register `sp`: they encode the algorithm's
+saved states, not nested function-call frames. Row pointers use `lw`, ranks
+use `lhu`/`sh`, and move indices and heuristic distances use `lbu`/`sb`.
+Keeping the element width explicit explains each shift in the table access.
 
 Measurements use the pinned Ripes `RV32_ISS --iret` and renderer-off linked
 `.text`, with the same input for each row:
@@ -224,9 +358,9 @@ intermediate state, and the completed solution in that order.
 For an instruction-level walkthrough, consider `lhu t5, 0(t4)` in the
 search loop. IF fetches its instruction word at PC. ID decodes the load and
 reads base register `t4`. EX computes the effective address `t4+0`. MEM
-reads the 16-bit transition rank from the selected move row. WB zero-extends
+reads the 16-bit current permutation rank from `p_stack[depth]`. WB zero-extends
 that rank into `t5`; register write enable is asserted and the writeback
-multiplexer selects memory data. The next `slli` or `add` uses the new rank,
+multiplexer selects memory data. The next `slli` or `add` uses the loaded current rank,
 so a pipelined model must respect this load-use dependency before the next
 table access. `sh` and `sb` later update the explicit search stack; they
 write memory at MEM rather than a destination register at WB. On October 2,
@@ -235,12 +369,12 @@ model to the first execution of `0x230` (`lhu t5, 0(t4)`). The instruction
 was in MEM at cycle 771 and WB at cycle 772. The following screenshot records
 WB; `t5` still shows its previous value before the next clock edge.
 
-![Ripes at cycle 772: the transition-table lhu is in WB](https://hackmd.io/_uploads/ryMpBG6qzg.jpg)
+![Ripes at cycle 772: the current-rank stack load is in WB](https://hackmd.io/_uploads/ryMpBG6qzg.jpg)
 
 After cycle 773, `t5` holds `0x000002d0` (720), and the dependent
 `slli t5, t5, 1` is in MEM. The screenshot confirms that the load result
-has reached the register file. This corrects the earlier draft's truncated
-`0x0000002d` value; the captured value is `0x000002d0`.
+has reached the register file. This is the initial permutation rank, not the rank after a move. The
+transition lookup occurs later at `0x23c` (`lhu t2, 0(t2)`).
 
 ![Ripes at cycle 773: x30 (t5) contains the loaded value 0x000002d0](https://hackmd.io/_uploads/ByzpHM6qMe.jpg)
 
@@ -255,6 +389,98 @@ the dependent instruction has a dash before EX while the load advances.
 Current CLI evidence for the solved state, one-turn state, and required 11-move vector is saved in `evidence/target-tests.txt`; the exhaustive distance-11 results are in [`evidence/depth11-rv32-iss.tsv`](https://github.com/EricHuang0302/minirubik/blob/codex/hw1-c-solver/evidence/depth11-rv32-iss.tsv). The required vector also ran in `RV32_5S` with 21,896,137 cycles.
 :::
 
+### Observed control and data signals
+
+With **View → Show processor signal values** enabled, the same instruction
+can be followed through MEM and WB. At cycle 771, the MEM-stage address is
+`0x1000001d`, the `p_stack` base in this renderer-off build at depth zero.
+The data-memory read output is `0x000002d0`. The memory `Wr en` indicator
+is red (false), so the load does not overwrite the stack. This diagram has
+no separate visible `Rd en` pin; the `lhu` operation and read output identify
+the read. The figure also contains an older instruction in WB, so its
+writeback multiplexer must not be interpreted as the load's selector yet.
+
+![Ripes cycle 771: current-rank load in MEM, address 0x1000001d, read data 0x2d0, memory write disabled](https://hackmd.io/_uploads/SJLmcMaqzg.jpg)
+
+At cycle 772, `lhu` has reached WB. The writeback multiplexer selects its
+memory-data input `0x000002d0`, rather than the address `0x1000001d` carried
+along the ALU-result path. The destination index is `0x1e`, which is register
+30 (`t5`). Meanwhile MEM contains the load-use stall bubble; its zero-valued
+signals are not the previous cycle's memory read.
+
+![Ripes cycle 772: WB selects loaded memory data 0x2d0 for destination x30](https://hackmd.io/_uploads/S1hQcfacfg.jpg)
+
+The left side of the circuit at that same cycle shows the register file's
+`Wr En` indicator green (true). Although the register file is drawn beside
+ID, this write port is controlled by WB. On the following clock edge the
+value appears in `t5`, as shown in the cycle-773 capture above. The dependent
+`slli` receives the value through forwarding; its EX result at cycle 772 is
+`0x000005a0`, or `720×2`, the byte offset for a halfword table entry.
+
+![Ripes cycle 772: register write enabled and the dependent shift computes byte offset 0x5a0](https://hackmd.io/_uploads/HyXEqGTqMe.jpg)
+
+:::info
+Signals belong to the instruction currently occupying each pipeline stage.
+A load in WB, an arithmetic instruction in EX, and a stall bubble in MEM
+can coexist. The correct trace follows one instruction across clock cycles
+rather than assigning every visible control wire to that instruction.
+:::
+
+## Reproducing the representative tests
+
+The following renderer-off results are retained in
+[`evidence/target-tests.txt`](https://github.com/EricHuang0302/minirubik/blob/codex/hw1-c-solver/evidence/target-tests.txt)
+and [`evidence/pipeline-sample.txt`](https://github.com/EricHuang0302/minirubik/blob/codex/hw1-c-solver/evidence/pipeline-sample.txt).
+The table separates retired instructions from pipeline cycles.
+
+| Input | Purpose | Returned path length | Retired instructions | `RV32_5S` cycles |
+| --- | --- | ---: | ---: | ---: |
+| `12345671111111` | Already solved | 0 | 586 | 783 |
+| `25314672313211` | One-turn example | 1 (`R'`) | 784 | 1,041 |
+| `21345671111111` | Required vector | 11 | 17,215,301 | 21,896,137 |
+| `54721631111111` | Largest observed count among all distance-11 inputs | 11 | 47,074,059 | Not measured here |
+
+All recorded cases exited with code zero. An equally short alternative move
+sequence is valid; the decisive checks are its length and replay to solved.
+The full-domain host checker and the 2,644-case target sweep answer different
+questions: the former establishes optimality over all states, while the
+latter measures target cost over the complete hardest-distance layer.
+
+From the repository directory, build the host solver and packaged assembly:
+
+```sh
+make rv32_c rv32_solver.s rv32_solver_gui.s
+./rv32_c 12345671111111
+./rv32_c 25314672313211
+./rv32_c 21345671111111
+```
+
+The first solver invocation prints a blank solution line, the second prints `R'`, and
+the third prints the 11-move sample path. These host commands verify answers;
+they do not measure RV32I instructions. To measure the packaged sample on
+this Mac, run:
+
+```sh
+RIPES_BIN='/Users/erichuang/文件/NCKU成大資工/計算機結構/hw1/tools/Ripes-v2.2.6-106-g5b8a616-mac-universal2.app/Contents/MacOS/Ripes'
+"$RIPES_BIN" --mode cli --src rv32_solver.s -t asm \
+  --proc RV32_ISS --iret --exectime --timeout 60000
+```
+
+The sample is stored in `input_state` inside the assembly, not supplied as a
+CLI cube argument. For another input, change that 14-character string in
+Ripes Editor. Select the five-stage RV32I processor to follow the pipeline;
+use the renderer-off `rv32_solver.s` for the instruction walkthrough. In the
+current assembled build, stop at `0x230`, then clock until the load occupies
+MEM and WB. The cycle-771/772/773 sequence assumes a reset followed by the
+unmodified sample run. Peripheral settings or source changes may shift
+addresses, so locate the actual `lhu t5, 0(t4)` instruction when reproducing it.
+
+For animation, load `rv32_solver_gui.s`, instantiate a 35×25 LED Matrix, and
+use a 6-pixel LED display size to keep all six faces visible. Run the sample
+through completion and compare its final net with the saved solved capture.
+Rendering adds instructions and cycles, so the animation run is not the
+renderer-off count used in the performance table.
+
 ## Development process and remaining visual evidence
 
 The first Ripes memory estimate was exploratory. The user then ran the 64 KiB and 1 MiB probes and supplied terminal captures; I replaced the earlier slope and speed estimates with those observed numbers. This changed the host-memory projection, but not the design conclusion: a complete BFS table is much too large for the target. The C refactor made the algorithm easier to read, yet it also changed GCC's generated instruction count, so I rebuilt and remeasured the compiler comparison before reporting it. I reconstructed the earlier two-instruction search-loop reload in a temporary assembly copy to make the refinement table reproducible rather than relying only on an old note. The exhaustive host check and target CLI cases were rerun after these edits.
@@ -263,7 +489,7 @@ The GUI build assembles, and the five-stage `lhu` step trace, scrambled input
 net, and final LED Matrix net have been observed in Ripes. The input, intermediate,
 and full-width final LED screenshots are saved. The October 2 GUI run completed
 with all six solved faces visible. The October 2 pipeline captures also record
-the transition-table load at WB, its register result after the next clock,
+the current-rank stack load at WB, its register result after the next clock,
 and a five-stage instruction timeline. Public publication and the final
 submission snapshot remain pending.
 
