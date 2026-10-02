@@ -229,13 +229,27 @@ that rank into `t5`; register write enable is asserted and the writeback
 multiplexer selects memory data. The next `slli` or `add` uses the new rank,
 so a pipelined model must respect this load-use dependency before the next
 table access. `sh` and `sb` later update the explicit search stack; they
-write memory at MEM rather than a destination register at WB. I loaded the
-renderer-off assembly into the Ripes five-stage RV32I model, set a breakpoint
-at `0x230` (`lhu t5, 0(t4)`), and advanced the clock. The instruction passed
-through MEM at cycle 771 and WB at cycle 772; after cycle 773, `t5` held
-`0x0000002d`. The Ripes instruction list showed the following `slli` in the
-pipeline. A saved GUI screenshot is still needed for the submitted note.
+write memory at MEM rather than a destination register at WB. On October 2,
+2026, I reloaded the renderer-off assembly and advanced the five-stage RV32I
+model to the first execution of `0x230` (`lhu t5, 0(t4)`). The instruction
+was in MEM at cycle 771 and WB at cycle 772. The following screenshot records
+WB; `t5` still shows its previous value before the next clock edge.
 
+![Ripes at cycle 772: the transition-table lhu is in WB](https://hackmd.io/_uploads/ryMpBG6qzg.jpg)
+
+After cycle 773, `t5` holds `0x000002d0` (720), and the dependent
+`slli t5, t5, 1` is in MEM. The screenshot confirms that the load result
+has reached the register file. This corrects the earlier draft's truncated
+`0x0000002d` value; the captured value is `0x000002d0`.
+
+![Ripes at cycle 773: x30 (t5) contains the loaded value 0x000002d0](https://hackmd.io/_uploads/ByzpHM6qMe.jpg)
+
+The Pipeline diagram below shows the startup instructions moving through
+IF, ID, EX, MEM, and WB over successive cycles. The `lbu x29, 0(x5)`
+followed by `addi x30, x29, -49` also shows a one-cycle load-use stall:
+the dependent instruction has a dash before EX while the load advances.
+
+![Ripes Pipeline diagram showing five stages and a parser load-use stall](https://hackmd.io/_uploads/S1MpBfpcGg.jpg)
 
 :::info
 Current CLI evidence for the solved state, one-turn state, and required 11-move vector is saved in `evidence/target-tests.txt`; the exhaustive distance-11 results are in [`evidence/depth11-rv32-iss.tsv`](https://github.com/EricHuang0302/minirubik/blob/codex/hw1-c-solver/evidence/depth11-rv32-iss.tsv). The required vector also ran in `RV32_5S` with 21,896,137 cycles.
@@ -248,7 +262,9 @@ The first Ripes memory estimate was exploratory. The user then ran the 64 KiB an
 The GUI build assembles, and the five-stage `lhu` step trace, scrambled input
 net, and final LED Matrix net have been observed in Ripes. The input, intermediate,
 and full-width final LED screenshots are saved. The October 2 GUI run completed
-with all six solved faces visible. A pipeline screenshot still needs to be
-saved before this note is submitted as final evidence.
+with all six solved faces visible. The October 2 pipeline captures also record
+the transition-table load at WB, its register result after the next clock,
+and a five-stage instruction timeline. Public publication and the final
+submission snapshot remain pending.
 
 *AI assistance: OpenAI Codex drafted this English note, prepared the memory probe, and generated or revised the C and RV32I implementations. The stage-1 numbers were calculated from terminal screenshots supplied by the user; the later checks were run by Codex. The student should independently review the design and interpretation before submission.*
