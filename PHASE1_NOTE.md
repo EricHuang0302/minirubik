@@ -203,18 +203,23 @@ axis order was checked against `solver.c`'s `R`, `B`, and `D` source and twist
 maps. No animation frame is prerecorded. An earlier CLI test replaced the peripheral with an 875-word RAM buffer,
 ran the sample path, and compared every final pixel against the solved
 net; it passed. The test output was not retained with this draft. I also ran
-the GUI assembly in Ripes with an instantiated 35×25 LED Matrix. Its I/O tab
-showed the final unfolded net in six distinct colors after the sample query
-completed. The screenshot below records that final display. The LED widget
-was too narrow at its former 8-pixel setting, so the right edge of the blue
-Back face is clipped in this capture. The next screenshot records the
-scrambled input before the first move, using a 6-pixel LED setting that fits
-all six faces. A visible intermediate move frame and a full-width final
-frame are still needed.
-
-![Ripes LED Matrix after the sample solution; the blue face is partly clipped by the widget](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/ripes-led-final.png)
+the GUI assembly in Ripes with an instantiated 35×25 LED Matrix. On October 2,
+2026, I paused the sample animation using a breakpoint at `0x47c` in the
+Executable code view. This address belongs to `lw ra, 12(sp)` after the
+renderer call in the current GUI build; changing the I/O configuration can
+change assembled addresses. A pipeline breakpoint can stop before the call
+has finished, so I advanced the clock and resumed execution before capturing
+the redrawn net. The intermediate capture visibly differs from the input.
+After the remaining moves, execution finished and all six faces displayed
+their solved colors. A 6-pixel LED setting fits the complete 35-column net,
+including the blue Back face. The following captures show input, an
+intermediate state, and the completed solution in that order.
 
 ![Ripes LED Matrix showing the scrambled sample input before the first move](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/ripes-led-initial.png)
+
+![Ripes LED Matrix during the sample solution, with colors changed from the input](https://hackmd.io/_uploads/B10W7zTqGl.jpg)
+
+![Ripes LED Matrix after all sample moves, with all six solved faces fully visible](https://hackmd.io/_uploads/H1aqmMa5fx.jpg)
 
 For an instruction-level walkthrough, consider `lhu t5, 0(t4)` in the
 search loop. IF fetches its instruction word at PC. ID decodes the load and
@@ -241,9 +246,9 @@ Current CLI evidence for the solved state, one-turn state, and required 11-move 
 The first Ripes memory estimate was exploratory. The user then ran the 64 KiB and 1 MiB probes and supplied terminal captures; I replaced the earlier slope and speed estimates with those observed numbers. This changed the host-memory projection, but not the design conclusion: a complete BFS table is much too large for the target. The C refactor made the algorithm easier to read, yet it also changed GCC's generated instruction count, so I rebuilt and remeasured the compiler comparison before reporting it. I reconstructed the earlier two-instruction search-loop reload in a temporary assembly copy to make the refinement table reproducible rather than relying only on an old note. The exhaustive host check and target CLI cases were rerun after these edits.
 
 The GUI build assembles, and the five-stage `lhu` step trace, scrambled input
-net, and final LED Matrix net have been observed in Ripes. The input and final
-LED screenshots are saved; a visible intermediate move frame, a full-width
-final frame, and a pipeline screenshot still need to be checked before this
-note is submitted as final evidence.
+net, and final LED Matrix net have been observed in Ripes. The input, intermediate,
+and full-width final LED screenshots are saved. The October 2 GUI run completed
+with all six solved faces visible. A pipeline screenshot still needs to be
+saved before this note is submitted as final evidence.
 
 *AI assistance: OpenAI Codex drafted this English note, prepared the memory probe, and generated or revised the C and RV32I implementations. The stage-1 numbers were calculated from terminal screenshots supplied by the user; the later checks were run by Codex. The student should independently review the design and interpretation before submission.*
