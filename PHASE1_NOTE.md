@@ -4,9 +4,9 @@
 
 OpenAI Codex was used for:
 
-- Conceptual explanations, search design, correctness reasoning, and optimization analysis.
-- C and RV32I code generation, revision, annotation, debugging, and test execution.
-- Measurement analysis, English drafting, translation, and technical writing refinement.
+- Conceptual Explanation and Code debugging
+- Code Annotation
+- Translation and Technical Writing (Polishing)
 
 Measurements use Ripes `v2.2.6-106-g5b8a616` on this Mac (binary SHA-256 `bea887fcf020c1dda1f44177c19c27a13f3b93c625b17194ac37e3d421a34fc4`). The fork started from upstream commit `3811ad0a87bd490e45099c3cb179ec33caf46cb5`.
 
