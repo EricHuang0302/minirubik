@@ -91,6 +91,14 @@ uint16_t o = (uint16_t) (here % ORIENTATIONS);
 
 RV32I has no `div`, `rem`, or `mul` instruction. The rank calculation and index recombination use multiplication as well. A direct translation would have to replace those operations with longer instruction sequences or helper routines, adding cost inside the table-building path. This is why the next design stage must change the amount of state stored and the work done for each query, while preserving the original solver's shortest-path guarantee.
 
+### Reconsidering report.md section 7
+
+[Section 7 of the original report](https://github.com/sysprog21/minirubik/blob/3811ad0a87bd490e45099c3cb179ec33caf46cb5/report.md#7-implementation-notes-and-possible-improvements) argues that the complete table is a verification artifact: exhaustive construction checks reachability and the depth distribution on every run. That is a reasonable trade on a hosted machine, where the reported construction time is small and several megabytes of memory are affordable. The benefit is verification of the move model, rather than a compelling speed advantage for a program that answers only one query per process.
+
+The proposed queue-free level sweep does not make that design suitable for this target. It still retains 3,674,160 answer bytes and 34,614 transition bytes, or 3,708,774 bytes, about 28.3 times the 128 KiB budget. Its 12 full scans also perform 44,089,920 table-entry inspections before accounting for edge expansion. Moving the tables from stack to heap or static storage changes their lifetime and location, but not that cost. Ripes additionally pays sparse host-memory overhead and simulated instructions for the construction itself.
+
+Verification need not be performed by the same processor that answers the query. The complete BFS distance table remains a host-side oracle in `tools/check_rv32_c.c`: H1 compares the heuristic with exact distances, and H3 checks the new search over the entire domain. The target carries only factored transitions, projected distance tables, and a bounded search stack. It computes the path on RV32I and replays that path before printing it. This preserves exhaustive evidence on the host without linking a complete answer or distance table into the target. Path replay checks that a returned path solves the cube; optimality is supported separately by admissibility and the exhaustive length comparison.
+
 ## Stage 2: Representation and optimal search
 
 The target solver keeps a permutation rank `P` in `[0,5039]` and an
@@ -159,6 +167,29 @@ cube-array copies, modulo, multiplication, or division. The `p`, `o`, and
 [`tools/gen_rv32_tables.c`](https://github.com/EricHuang0302/minirubik/blob/codex/hw1-c-solver/tools/gen_rv32_tables.c) uses the original
 `solver.c` move definitions to produce the exact same tables for the C and
 assembly builds. This keeps the semantic source of cube moves in one place.
+
+### What changes in the C operation count
+
+Two comparisons are useful here: the original BFS construction versus target-side search, and the original cubie-based answer loop versus rank-based state updates. They are different workloads; the counts below are source-level operations, not retired RV32I instructions or a claim that each operation becomes one instruction.
+
+The baseline build dequeues every state. Splitting each combined rank requires one division and one remainder by 729, giving 3,674,160 of each. Its nine outgoing edges per state perform 66,134,880 halfword transition lookups and 33,067,440 expressions of the form `next_p * 729 + next_o`. Each edge also probes the answer table, and each newly discovered state writes an answer byte and a queue entry. The new target search retains separate ranks, so its hot loop needs zero combined-rank divisions, remainders, or recombinations. It also allocates no full-domain queue or answer table. This reduces the amount of work, rather than merely making the same full enumeration faster.
+
+For state updates, the original `quarter_turn()` assigns seven permutation bytes and seven orientation bytes and evaluates seven orientation remainders. `apply_move()` repeats it one, two, or three times, depending on the move. Reusing that cubie-based procedure in a search would therefore write 14, 28, or 42 result bytes and evaluate 7, 14, or 21 orientation reductions for each child, before ranking the result. These are explicit field assignments; extra compiler-generated structure copies are not counted. The original BFS already avoids this procedure in its expansion loop through factored tables, so this is a comparison with its answer loop, not a new saving attributed to BFS.
+
+The refined C stores all nine move results directly. An accepted child performs two transition-table reads, one for each rank, and two halfword rank-stack writes, for four bytes of saved state. The C expression also reads the current two ranks. Move cursors, the path byte, face checks, and depth bookkeeping remain additional work; four bytes is not the total traffic of the entire loop. Every child uses the same two table lookups, whether the move is a quarter, half, or inverse turn. No cubie array is reconstructed or reranked in this loop.
+
+The original `rank_state()` performs `6+5+4+3+2+1=21` piece comparisons and six base-three orientation updates per call. Its answer loop calls it initially and after each of `L` emitted moves. The new C parser performs the 21 comparisons and six orientation updates once, eliminating `21L` subsequent piece comparisons and `6L` orientation updates for a path of length `L`. For an 11-move answer, those are 231 comparisons and 66 orientation updates. During IDA* search, the same rank representation also avoids this work for every explored child, including children eventually discarded. The GUI renderer still updates cubies to draw actual moves; these savings describe the search and renderer-off measurement build.
+
+Same-face pruning happens before the transition accesses:
+
+```c
+if (depth && move_face[move] == move_face[path[depth - 1]])
+    continue;
+```
+
+After the root, three of the nine move candidates are skipped, leaving at most six children. For a node whose cursor examines all nine candidates, this avoids six transition-table reads and six rank-stack writes, as well as entering those three child nodes. All nine candidate checks still occur, so this is a one-third reduction in possible child generation, not a measured one-third reduction in total runtime. A heuristic evaluation reads two distance bytes and takes their maximum on the first visit to a node; `next_move[depth]` prevents repeating it when that same node resumes after a child returns. A later IDA* bound can revisit and reevaluate the state.
+
+These choices spend memory to simplify the inner loop. Nine direct move rows occupy 103,842 bytes, versus 34,614 bytes for three quarter-turn rows: an increase of 69,228 bytes. The two byte-distance tables add 5,769 bytes, giving 109,611 table bytes. Byte distances avoid packed-nibble extraction, and four-byte row pointers avoid multiplying by a non-power-of-two row stride at runtime. The assembled program's total static data is 109,813 bytes, leaving 21,259 bytes below the limit. This is the concrete memory-for-work trade; its target benefit is checked with the measured C and assembly instruction counts, rather than inferred from these source-level counts alone.
 
 The tables total 109,611 bytes. The linked assembly measurement build has
 109,813 bytes of `.data` (tables, row pointers, input, and small work arrays),
