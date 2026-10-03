@@ -394,19 +394,127 @@ intermediate state, and the completed solution in that order.
 
 ![Ripes LED Matrix after all sample moves, with all six solved faces fully visible](https://hackmd.io/_uploads/H1aqmMa5fx.jpg)
 
-For an instruction-level walkthrough, consider `lhu t5, 0(t4)` in the
-search loop. IF fetches its instruction word at PC. ID decodes the load and
-reads base register `t4`. EX computes the effective address `t4+0`. MEM
-reads the 16-bit current permutation rank from `p_stack[depth]`. WB zero-extends
-that rank into `t5`; register write enable is asserted and the writeback
-multiplexer selects memory data. The next `slli` or `add` uses the loaded current rank,
-so a pipelined model must respect this load-use dependency before the next
-table access. `sh` and `sb` later update the explicit search stack; they
-write memory at MEM rather than a destination register at WB. On October 2,
-2026, the renderer-off assembly was reloaded and the five-stage RV32I
-model was advanced to the first execution of `0x230` (`lhu t5, 0(t4)`). The instruction
-was in MEM at cycle 771 and WB at cycle 772. The following screenshot records
-WB; `t5` still shows its previous value before the next clock edge.
+### Five stages: following one instruction
+
+A five-stage processor splits instruction execution into the following work:
+
+| Stage | Name | Main work |
+| --- | --- | --- |
+| IF | Instruction Fetch | Fetch an instruction word using the program counter (PC). |
+| ID | Instruction Decode | Decode its fields, read source registers, and form the immediate. |
+| EX | Execute | Perform arithmetic, calculate a load/store address, or resolve a branch. |
+| MEM | Memory Access | Read or write data memory for a load or store. |
+| WB | Write Back | Write a result to a destination register when required. |
+
+Different instructions can occupy different stages in the same cycle. After
+filling the pipeline, an ideal sequence can finish one instruction per cycle,
+but dependencies and branches can insert stalls or flushes. This improves
+throughput; it does not necessarily reduce the latency of a single instruction.
+The following trace uses Ripes' five-stage RV32I model with forwarding and
+hazard detection, rather than the faster instruction-set simulator.
+
+### From a C array update to two loads and one store
+
+The purpose of this C statement is to record the permutation after one move:
+
+```c
+perm_stack[depth + 1] = perm_next[move][perm_stack[depth]];
+```
+
+Stage 4 gives the complete translation. Here, assume the move row has already
+been selected into `t2`, `s3` holds `depth`, and `s4` points to the
+permutation stack. First, read the current permutation rank:
+
+```asm
+slli t3, s3, 1
+add t4, s4, t3
+lhu t5, 0(t4)
+```
+
+Each rank is a `uint16_t` occupying two bytes. Thus `depth << 1` is the
+stack byte offset. The first `lhu` reads the current rank into `t5`;
+it does not apply a move. Next, use that rank to index the selected move row:
+
+```asm
+slli t5, t5, 1
+add t2, t2, t5
+lhu t2, 0(t2)
+```
+
+The table entries are also two-byte ranks. The shift converts a rank into a
+byte offset; the second `lhu` reads the new rank produced by the move.
+Finally, write that result to the next depth slot:
+
+```asm
+addi t4, t4, 2
+sh t2, 0(t4)
+```
+
+Adding two advances from `perm_stack[depth]` to `perm_stack[depth + 1]`.
+`sh` writes the low 16 bits of `t2` to memory. Its address is calculated
+in EX and its memory write occurs in MEM; it has no destination register
+and does not enable register writeback. This store explanation follows the
+source and instruction semantics; the screenshots below trace the first load.
+
+### Decoding the current-rank load
+
+The instruction at `0x230` is `lhu t5, 0(t4)`. Ripes displays the
+machine word `0x000edf03`. It uses the I-type format:
+
+| Field | Bits | Value | Meaning |
+| --- | --- | --- | --- |
+| Immediate | 31–20 | `000000000000` | Offset 0 |
+| rs1 | 19–15 | `11101` (29) | Base register x29, alias t4 |
+| funct3 | 14–12 | `101` | Unsigned halfword load |
+| rd | 11–7 | `11110` (30) | Destination x30, alias t5 |
+| opcode | 6–0 | `0000011` | Load instruction |
+
+The fields reconstruct the observed word:
+
+```text
+(0 << 20) | (29 << 15) | (5 << 12) | (30 << 7) | 0x03
+= 0x000edf03
+```
+
+This instruction has one source register and no rs2 operand. `lhu` reads
+a 16-bit halfword and zero-extends it to the 32-bit destination. The current
+stack in this assembled build starts at `0x1000001d`; at depth zero, the
+loaded rank is 720 (`0x02d0`), yielding `0x000002d0` in `t5`. This
+address is not halfword-aligned. The recorded Ripes run handles this access;
+RV32I execution environments may instead trap on misaligned loads, so this
+trace should not be taken as a portability guarantee for physical hardware.
+
+### Following the same load through IF, ID, and EX
+
+The October 3 captures below follow `0x230` in the renderer-off build.
+The instruction-memory Stage column identifies the instruction being traced.
+
+At cycle 768, **IF** fetches `0x000edf03` at `0x230`. The sequential
+next-PC calculation produces `0x234`. The instruction in ID is still the
+preceding `add`, so its decode signals do not describe the load.
+
+![Ripes cycle 768: instruction 0x230 in IF, fetched word 0x000edf03](https://hackmd.io/_uploads/BJdXEN09Gl.jpg)
+
+At cycle 769, **ID** decodes LHU, source index `0x1d` (t4), destination
+index `0x1e` (t5), and immediate zero. The immediately preceding `add`
+is still producing the base address; the register-file read alone is not
+necessarily the value that the load will use in EX.
+
+![Ripes cycle 769: instruction 0x230 in ID, LHU and register fields decoded](https://hackmd.io/_uploads/B1v444C5fe.jpg)
+
+At cycle 770, **EX** adds the base address and offset zero, producing
+`0x1000001d`. The forwarding path supplies the preceding `add`'s result
+to the ALU even though an older register value remains visible at the ID/EX
+input. This is an address dependency, distinct from the load-use dependency
+on the rank that will be read in MEM.
+
+![Ripes cycle 770: instruction 0x230 in EX, forwarded base plus zero gives 0x1000001d](https://hackmd.io/_uploads/BJSHNN0czg.jpg)
+
+The existing October 2 captures complete the same instruction's walkthrough:
+**MEM** at cycle 771 reads the halfword, and **WB** at cycle 772 selects
+its zero-extended memory result for x30. The signal close-ups below show
+both stages. In the following WB screenshot, `t5` still shows its previous
+value before the next clock edge.
 
 ![Ripes at cycle 772: the current-rank stack load is in WB](https://hackmd.io/_uploads/ryMpBG6qzg.jpg)
 
@@ -416,6 +524,29 @@ has reached the register file. This is the initial permutation rank, not the ran
 transition lookup occurs later at `0x23c` (`lhu t2, 0(t2)`).
 
 ![Ripes at cycle 773: x30 (t5) contains the loaded value 0x000002d0](https://hackmd.io/_uploads/ByzpHM6qMe.jpg)
+
+### Why the next shift waits for the load
+
+The current-rank load is immediately followed by a dependent instruction:
+
+```asm
+lhu t5, 0(t4)
+slli t5, t5, 1
+```
+
+The shift needs the load result as its EX operand. A load obtains that result
+from memory in MEM, too late for the next instruction's EX stage in the same
+cycle. The hazard unit therefore inserts one stall cycle. Forwarding then
+supplies the loaded value to the shift without waiting for another register
+read. Forwarding removes many dependencies' delays, but cannot remove this
+immediate load-use delay in this five-stage model.
+
+In the recorded trace, the load is in MEM at cycle 771 while the shift waits
+in ID; at cycle 772 the load is in WB, the bubble is in MEM, and the shift
+is in EX. Its result is `0x000005a0` (1,440), which is rank 720 multiplied
+by the two-byte entry size, not another permutation rank. The register-write
+close-up below shows this forwarded shift result. The startup timeline below
+provides a second example of the same kind of load-use stall in the parser.
 
 The Pipeline diagram below shows the startup instructions moving through
 IF, ID, EX, MEM, and WB over successive cycles. The `lbu x29, 0(x5)`
@@ -510,7 +641,7 @@ CLI cube argument. For another input, change that 14-character string in
 Ripes Editor. Select the five-stage RV32I processor to follow the pipeline;
 use the renderer-off `rv32_solver.s` for the instruction walkthrough. In the
 current assembled build, stop at `0x230`, then clock until the load occupies
-MEM and WB. The cycle-771/772/773 sequence assumes a reset followed by the
+MEM and WB. The cycle-768 through cycle-773 sequence assumes a reset followed by the
 unmodified sample run. Peripheral settings or source changes may shift
 addresses, so locate the actual `lhu t5, 0(t4)` instruction when reproducing it.
 
@@ -529,5 +660,14 @@ net, and final LED Matrix net have been observed in Ripes. The input, intermedia
 and full-width final LED screenshots are saved. The October 2 GUI run completed
 with all six solved faces visible. The October 2 pipeline captures also record
 the current-rank stack load at WB, its register result after the next clock,
-and a five-stage instruction timeline. Public publication and the final
+and a five-stage instruction timeline. The October 3 captures extend the same
+load trace through IF, ID, and EX, with its instruction encoding checked
+against the fetched word. Public publication and the final
 submission snapshot remain pending.
+
+
+## References
+
+- [RISC-V Unprivileged ISA: RV32I Base Integer Instruction Set](https://docs.riscv.org/reference/isa/unpriv/rv32.html): instruction formats and load/store semantics.
+- [Official Ripes documentation](https://github.com/mortbopet/Ripes/tree/master/docs): processor visualization, pipeline inspection, and simulator use.
+- [Richard E. Korf, Depth-first iterative-deepening: An optimal admissible tree search (1985)](https://doi.org/10.1016/0004-3702(85)90084-0): the original IDA* search reference.
