@@ -668,6 +668,8 @@ submission snapshot remain pending.
 
 ## References
 
-- [RISC-V Unprivileged ISA: RV32I Base Integer Instruction Set](https://docs.riscv.org/reference/isa/unpriv/rv32.html): instruction formats and load/store semantics.
-- [Official Ripes documentation](https://github.com/mortbopet/Ripes/tree/master/docs): processor visualization, pipeline inspection, and simulator use.
-- [Richard E. Korf, Depth-first iterative-deepening: An optimal admissible tree search (1985)](https://doi.org/10.1016/0004-3702(85)90084-0): the original IDA* search reference.
+- [Lab1: RV32I Simulator](https://hackmd.io/@sysprog/H1TpVYMdB)
+- [Assignment 1: Optimizations and RISC-V Assembly](https://hackmd.io/@sysprog/2026-arch-homework1)
+- [RISC-V Instruction Set Specifications](https://msyksphinz-self.github.io/riscv-isadoc/html/index.html)
+- [Learning RISC-V Assembly, Lesson 6: Pseudo-instruction List](https://www.cnblogs.com/sureZ-learning/p/18402878)
+- [RISCV Assembly Tutorial: Practice with LED and Switch on Simulator (starting at 3:03)](https://youtu.be/rlB8aeXDpc0?si=oHRgyLA-vuF7Erqb&t=183)
