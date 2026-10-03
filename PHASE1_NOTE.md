@@ -484,10 +484,20 @@ address is not halfword-aligned. The recorded Ripes run handles this access;
 RV32I execution environments may instead trap on misaligned loads, so this
 trace should not be taken as a portability guarantee for physical hardware.
 
-### Following the same load through IF, ID, and EX
+### Following one load through all five stages
 
-The October 3 captures below follow `0x230` in the renderer-off build.
-The instruction-memory Stage column identifies the instruction being traced.
+The instruction `lhu t5, 0(t4)` at `0x230` reads the current permutation
+rank from the depth stack. The IF, ID, and EX captures were recorded on
+October 3; the MEM, WB, and register-result captures were recorded on
+October 2 with the same renderer-off build. Read each explanation together
+with the image directly below it. The Instruction memory Stage column
+identifies the instruction being followed.
+
+#### 1. Instruction Fetch (IF) — cycle 768
+
+**Where to look:** the Instruction memory table at the lower right marks
+address `0x230` as IF. In the circuit, follow the instruction-memory output
+`0x000edf03`; this is the instruction word, not the value loaded from data memory.
 
 At cycle 768, **IF** fetches `0x000edf03` at `0x230`. The sequential
 next-PC calculation produces `0x234`. The instruction in ID is still the
@@ -495,12 +505,24 @@ preceding `add`, so its decode signals do not describe the load.
 
 ![Ripes cycle 768: instruction 0x230 in IF, fetched word 0x000edf03](https://hackmd.io/_uploads/BJdXEN09Gl.jpg)
 
+#### 2. Instruction Decode (ID) — cycle 769
+
+**Where to look:** the Decode block identifies LHU. Its source index
+`0x1d` means x29, and its destination index `0x1e` means x30. The Imm.
+block produces zero, so the load has no additional address offset.
+
 At cycle 769, **ID** decodes LHU, source index `0x1d` (t4), destination
 index `0x1e` (t5), and immediate zero. The immediately preceding `add`
 is still producing the base address; the register-file read alone is not
 necessarily the value that the load will use in EX.
 
 ![Ripes cycle 769: instruction 0x230 in ID, LHU and register fields decoded](https://hackmd.io/_uploads/B1v444C5fe.jpg)
+
+#### 3. Execution (EX) — cycle 770
+
+**Where to look:** follow the forwarding multiplexer into ALU operand 1,
+then compare operand 2 (zero) with the ALU result `0x1000001d`. This result
+is a memory address; the rank 720 has not been read yet.
 
 At cycle 770, **EX** adds the base address and offset zero, producing
 `0x1000001d`. The forwarding path supplies the preceding `add`'s result
@@ -510,13 +532,51 @@ on the rank that will be read in MEM.
 
 ![Ripes cycle 770: instruction 0x230 in EX, forwarded base plus zero gives 0x1000001d](https://hackmd.io/_uploads/BJSHNN0czg.jpg)
 
-The existing October 2 captures complete the same instruction's walkthrough:
-**MEM** at cycle 771 reads the halfword, and **WB** at cycle 772 selects
-its zero-extended memory result for x30. The signal close-ups below show
-both stages. In the following WB screenshot, `t5` still shows its previous
-value before the next clock edge.
+#### 4. Data Memory Access (MEM) — cycle 771
 
-![Ripes at cycle 772: the current-rank stack load is in WB](https://hackmd.io/_uploads/ryMpBG6qzg.jpg)
+**Where to look:** with **View → Show processor signal values** enabled,
+inspect the Data memory address, its read output, and the `Wr en` indicator.
+Unlike `addi`, this load actually reads memory in this stage.
+
+At cycle 771, the MEM-stage address is
+`0x1000001d`, the `p_stack` base in this renderer-off build at depth zero.
+The data-memory read output is `0x000002d0`. The memory `Wr en` indicator
+is red (false), so the load does not overwrite the stack. This diagram has
+no separate visible `Rd en` pin; the `lhu` operation and read output identify
+the read. The figure also contains an older instruction in WB, so its
+writeback multiplexer must not be interpreted as the load's selector yet.
+
+![Ripes cycle 771: current-rank load in MEM, address 0x1000001d, read data 0x2d0, memory write disabled](https://hackmd.io/_uploads/SJLmcMaqzg.jpg)
+
+#### 5. Write Back (WB) — cycle 772, result visible at 773
+
+**Where to look:** inspect the writeback multiplexer selection and
+destination index, then the register file's green `Wr En` indicator.
+The next-clock screenshot confirms the value in x30 (`t5`).
+
+At cycle 772, `lhu` has reached WB. The writeback multiplexer selects its
+memory-data input `0x000002d0`, rather than the address `0x1000001d` carried
+along the ALU-result path. The destination index is `0x1e`, which is register
+30 (`t5`). Meanwhile MEM contains the load-use stall bubble; its zero-valued
+signals are not the previous cycle's memory read.
+
+![Ripes cycle 772: WB selects loaded memory data 0x2d0 for destination x30](https://hackmd.io/_uploads/S1hQcfacfg.jpg)
+
+The left side of the circuit at that same cycle shows the register file's
+`Wr En` indicator green (true). Although the register file is drawn beside
+ID, this write port is controlled by WB. On the following clock edge the
+value appears in `t5`, as shown in the cycle-773 capture below. The dependent
+`slli` receives the value through forwarding; its EX result at cycle 772 is
+`0x000005a0`, or `720×2`, the byte offset for a halfword table entry.
+
+![Ripes cycle 772: register write enabled and the dependent shift computes byte offset 0x5a0](https://hackmd.io/_uploads/HyXEqGTqMe.jpg)
+
+:::info
+Signals belong to the instruction currently occupying each pipeline stage.
+A load in WB, an arithmetic instruction in EX, and a stall bubble in MEM
+can coexist. The correct trace follows one instruction across clock cycles
+rather than assigning every visible control wire to that instruction.
+:::
 
 After cycle 773, `t5` holds `0x000002d0` (720), and the dependent
 `slli t5, t5, 1` is in MEM. The screenshot confirms that the load result
@@ -545,7 +605,7 @@ In the recorded trace, the load is in MEM at cycle 771 while the shift waits
 in ID; at cycle 772 the load is in WB, the bubble is in MEM, and the shift
 is in EX. Its result is `0x000005a0` (1,440), which is rank 720 multiplied
 by the two-byte entry size, not another permutation rank. The register-write
-close-up below shows this forwarded shift result. The startup timeline below
+close-up above shows this forwarded shift result. The startup timeline below
 provides a second example of the same kind of load-use stall in the parser.
 
 The Pipeline diagram below shows the startup instructions moving through
@@ -557,43 +617,6 @@ the dependent instruction has a dash before EX while the load advances.
 
 :::info
 Current CLI evidence for the solved state, one-turn state, and required 11-move vector is saved in `evidence/target-tests.txt`; the exhaustive distance-11 results are in [`evidence/depth11-rv32-iss.tsv`](https://github.com/EricHuang0302/minirubik/blob/codex/hw1-c-solver/evidence/depth11-rv32-iss.tsv). The required vector also ran in `RV32_5S` with 21,896,137 cycles.
-:::
-
-### Observed control and data signals
-
-With **View → Show processor signal values** enabled, the same instruction
-can be followed through MEM and WB. At cycle 771, the MEM-stage address is
-`0x1000001d`, the `p_stack` base in this renderer-off build at depth zero.
-The data-memory read output is `0x000002d0`. The memory `Wr en` indicator
-is red (false), so the load does not overwrite the stack. This diagram has
-no separate visible `Rd en` pin; the `lhu` operation and read output identify
-the read. The figure also contains an older instruction in WB, so its
-writeback multiplexer must not be interpreted as the load's selector yet.
-
-![Ripes cycle 771: current-rank load in MEM, address 0x1000001d, read data 0x2d0, memory write disabled](https://hackmd.io/_uploads/SJLmcMaqzg.jpg)
-
-At cycle 772, `lhu` has reached WB. The writeback multiplexer selects its
-memory-data input `0x000002d0`, rather than the address `0x1000001d` carried
-along the ALU-result path. The destination index is `0x1e`, which is register
-30 (`t5`). Meanwhile MEM contains the load-use stall bubble; its zero-valued
-signals are not the previous cycle's memory read.
-
-![Ripes cycle 772: WB selects loaded memory data 0x2d0 for destination x30](https://hackmd.io/_uploads/S1hQcfacfg.jpg)
-
-The left side of the circuit at that same cycle shows the register file's
-`Wr En` indicator green (true). Although the register file is drawn beside
-ID, this write port is controlled by WB. On the following clock edge the
-value appears in `t5`, as shown in the cycle-773 capture above. The dependent
-`slli` receives the value through forwarding; its EX result at cycle 772 is
-`0x000005a0`, or `720×2`, the byte offset for a halfword table entry.
-
-![Ripes cycle 772: register write enabled and the dependent shift computes byte offset 0x5a0](https://hackmd.io/_uploads/HyXEqGTqMe.jpg)
-
-:::info
-Signals belong to the instruction currently occupying each pipeline stage.
-A load in WB, an arithmetic instruction in EX, and a stall bubble in MEM
-can coexist. The correct trace follows one instruction across clock cycles
-rather than assigning every visible control wire to that instruction.
 :::
 
 ## Reproducing the representative tests
