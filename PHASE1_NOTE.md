@@ -1,5 +1,13 @@
 # Mini-Rubik on RV32I: Development Notes
 
+## AI Tools Usage
+
+OpenAI Codex was used for:
+
+- Conceptual explanations, search design, correctness reasoning, and optimization analysis.
+- C and RV32I code generation, revision, annotation, debugging, and test execution.
+- Measurement analysis, English drafting, translation, and technical writing refinement.
+
 Measurements use Ripes `v2.2.6-106-g5b8a616` on this Mac (binary SHA-256 `bea887fcf020c1dda1f44177c19c27a13f3b93c625b17194ac37e3d421a34fc4`). The fork started from upstream commit `3811ad0a87bd490e45099c3cb179ec33caf46cb5`.
 
 ## The original C solver as a reference
@@ -58,7 +66,7 @@ The one-byte-per-state answer table uses 3,674,160 bytes. The queue holds up to 
 The 18,405,414-byte figure is the original C program's peak for these working arrays, not its static-data size. It conflicts with the assignment's 128 KiB static-data limit when the same arrays are reserved in a heap-free assembly program.
 :::
 
-Guest memory in this Ripes build also has a host-memory cost. In the user-provided terminal captures, the [64 KiB run](https://hackmd.io/_uploads/SyjDnd9cfg.png) reached a maximum resident set size of 73,842,688 host bytes, while the [1 MiB run](https://hackmd.io/_uploads/SJjP3_95Ge.png) reached 121,913,344 bytes. Subtracting the smaller run removes most of the simulator's fixed cost. The measured slope is `(121,913,344 - 73,842,688) / (1,048,576 - 65,536) = 48.9` additional host bytes per additional guest byte. Scaling that slope to the baseline's 18,405,414 guest bytes suggests approximately 900 MB of additional host memory, before fixed simulator overhead. This is an extrapolation from two runs, not a direct run of the complete BFS or a guarantee about other Ripes builds.
+Guest memory in this Ripes build also has a host-memory cost. In the recorded terminal captures, the [64 KiB run](https://hackmd.io/_uploads/SyjDnd9cfg.png) reached a maximum resident set size of 73,842,688 host bytes, while the [1 MiB run](https://hackmd.io/_uploads/SJjP3_95Ge.png) reached 121,913,344 bytes. Subtracting the smaller run removes most of the simulator's fixed cost. The measured slope is `(121,913,344 - 73,842,688) / (1,048,576 - 65,536) = 48.9` additional host bytes per additional guest byte. Scaling that slope to the baseline's 18,405,414 guest bytes suggests approximately 900 MB of additional host memory, before fixed simulator overhead. This is an extrapolation from two runs, not a direct run of the complete BFS or a guarantee about other Ripes builds.
 
 The 64 KiB run on `RV32_ISS`:
 
@@ -68,7 +76,7 @@ The 1 MiB run on `RV32_ISS`:
 
 ![1 MiB Ripes memory probe on RV32_ISS](https://hackmd.io/_uploads/SJjP3_95Ge.png)
 
-Memory is only one constraint. Complete BFS visits 3,674,160 states and considers nine turns from each one, yielding 33,067,440 edges. Each edge advances both a permutation and an orientation transition, for 66,134,880 transition updates. If a direct RV32I translation took about 15 retired instructions per update, it would already approach one billion instructions before other work; **15 is an assumption for estimating scale, not a measured instruction count**. In the user-provided 1 MiB captures, both processor models retired 1,048,581 instructions. The `RV32_ISS` model reported 41 ms, or about 25.6 million retired instructions per second; the [visual `RV32_5S` model](https://hackmd.io/_uploads/r1sP2u55Gl.png) reported 2,338 ms, or about 0.448 million per second. These are rates for the memory loop, not measurements of the original BFS. They show why building the whole table inside a visual pipeline simulator would be a poor starting design.
+Memory is only one constraint. Complete BFS visits 3,674,160 states and considers nine turns from each one, yielding 33,067,440 edges. Each edge advances both a permutation and an orientation transition, for 66,134,880 transition updates. If a direct RV32I translation took about 15 retired instructions per update, it would already approach one billion instructions before other work; **15 is an assumption for estimating scale, not a measured instruction count**. In the recorded 1 MiB captures, both processor models retired 1,048,581 instructions. The `RV32_ISS` model reported 41 ms, or about 25.6 million retired instructions per second; the [visual `RV32_5S` model](https://hackmd.io/_uploads/r1sP2u55Gl.png) reported 2,338 ms, or about 0.448 million per second. These are rates for the memory loop, not measurements of the original BFS. They show why building the whole table inside a visual pipeline simulator would be a poor starting design.
 
 The same 1 MiB run on the `RV32_5S` pipeline model:
 
@@ -336,13 +344,13 @@ selects each physical corner and one of its three sticker axes. The cyclic
 axis order was checked against `solver.c`'s `R`, `B`, and `D` source and twist
 maps. No animation frame is prerecorded. An earlier CLI test replaced the peripheral with an 875-word RAM buffer,
 ran the sample path, and compared every final pixel against the solved
-net; it passed. The test output was not retained with this draft. I also ran
-the GUI assembly in Ripes with an instantiated 35×25 LED Matrix. On October 2,
-2026, I paused the sample animation using a breakpoint at `0x47c` in the
+net; it passed. The test output was not retained with this draft. The GUI assembly also ran
+in Ripes with an instantiated 35×25 LED Matrix. On October 2,
+2026, the sample animation was paused using a breakpoint at `0x47c` in the
 Executable code view. This address belongs to `lw ra, 12(sp)` after the
 renderer call in the current GUI build; changing the I/O configuration can
 change assembled addresses. A pipeline breakpoint can stop before the call
-has finished, so I advanced the clock and resumed execution before capturing
+has finished, so the clock was advanced and execution resumed before capturing
 the redrawn net. The intermediate capture visibly differs from the input.
 After the remaining moves, execution finished and all six faces displayed
 their solved colors. A 6-pixel LED setting fits the complete 35-column net,
@@ -364,8 +372,8 @@ multiplexer selects memory data. The next `slli` or `add` uses the loaded curren
 so a pipelined model must respect this load-use dependency before the next
 table access. `sh` and `sb` later update the explicit search stack; they
 write memory at MEM rather than a destination register at WB. On October 2,
-2026, I reloaded the renderer-off assembly and advanced the five-stage RV32I
-model to the first execution of `0x230` (`lhu t5, 0(t4)`). The instruction
+2026, the renderer-off assembly was reloaded and the five-stage RV32I
+model was advanced to the first execution of `0x230` (`lhu t5, 0(t4)`). The instruction
 was in MEM at cycle 771 and WB at cycle 772. The following screenshot records
 WB; `t5` still shows its previous value before the next clock edge.
 
@@ -483,7 +491,7 @@ renderer-off count used in the performance table.
 
 ## Development process and remaining visual evidence
 
-The first Ripes memory estimate was exploratory. The user then ran the 64 KiB and 1 MiB probes and supplied terminal captures; I replaced the earlier slope and speed estimates with those observed numbers. This changed the host-memory projection, but not the design conclusion: a complete BFS table is much too large for the target. The C refactor made the algorithm easier to read, yet it also changed GCC's generated instruction count, so I rebuilt and remeasured the compiler comparison before reporting it. I reconstructed the earlier two-instruction search-loop reload in a temporary assembly copy to make the refinement table reproducible rather than relying only on an old note. The exhaustive host check and target CLI cases were rerun after these edits.
+The first Ripes memory estimate was exploratory. The subsequent 64 KiB and 1 MiB probe captures replaced the earlier slope and speed estimates with observed numbers. This changed the host-memory projection, but not the design conclusion: a complete BFS table is much too large for the target. The C refactor made the algorithm easier to read, yet it also changed GCC's generated instruction count, so the compiler comparison was rebuilt and remeasured before reporting it. The earlier two-instruction search-loop reload was reconstructed in a temporary assembly copy to make the refinement table reproducible rather than relying only on an old note. The exhaustive host check and target CLI cases were rerun after these edits.
 
 The GUI build assembles, and the five-stage `lhu` step trace, scrambled input
 net, and final LED Matrix net have been observed in Ripes. The input, intermediate,
@@ -492,5 +500,3 @@ with all six solved faces visible. The October 2 pipeline captures also record
 the current-rank stack load at WB, its register result after the next clock,
 and a five-stage instruction timeline. Public publication and the final
 submission snapshot remain pending.
-
-*AI assistance: OpenAI Codex drafted this English note, prepared the memory probe, and generated or revised the C and RV32I implementations. The stage-1 numbers were calculated from terminal screenshots supplied by the user; the later checks were run by Codex. The student should independently review the design and interpretation before submission.*
