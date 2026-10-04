@@ -8,9 +8,11 @@ OpenAI Codex was used for:
 - Code Annotation
 - Translation and Technical Writing (Polishing)
 
-Measurements use Ripes `v2.2.6-106-g5b8a616` on this Mac (binary SHA-256 `bea887fcf020c1dda1f44177c19c27a13f3b93c625b17194ac37e3d421a34fc4`). The fork started from upstream commit `3811ad0a87bd490e45099c3cb179ec33caf46cb5`.
+## Summary
 
-## The original C solver as a reference
+The original solver builds a complete BFS answer table whose working arrays are too large for the 128 KiB target budget. The revised solver uses smaller transition and distance tables with IDA* to find a shortest solution for each input. Validation passed H1–H3 and host path replay over all 3,674,160 states; the RV32I build uses 109,813 static-data bytes and stays below 50 million retired instructions on all 2,644 distance-11 inputs.
+
+## Stage 1: Original solver and target constraints
 
 The starting point for this assignment is [`solver.c` at upstream commit `3811ad0`](https://github.com/sysprog21/minirubik/blob/3811ad0a87bd490e45099c3cb179ec33caf46cb5/solver.c).
 
@@ -113,7 +115,7 @@ The original program also provides a correctness reference:
 
 These exhaustive results serve as the oracle for checking the smaller target solver.
 
-## Why the original solver does not fit Ripes
+### Why the original solver does not fit Ripes
 
 Building the complete BFS table exceeds the target budget. The three dominant allocations appear in [`build_table()`](https://github.com/sysprog21/minirubik/blob/3811ad0a87bd490e45099c3cb179ec33caf46cb5/solver.c#L191-L195):
 
@@ -134,6 +136,10 @@ uint16_t permutation[3][PERMUTATIONS], orientation[3][ORIENTATIONS];
 :::warning
 The 18,405,414-byte figure is the original C program's peak for these working arrays, not its static-data size. It conflicts with the assignment's 128 KiB static-data limit when the same arrays are reserved in a heap-free assembly program.
 :::
+
+### Measurement environment
+
+Measurements use Ripes `v2.2.6-106-g5b8a616` on this Mac (binary SHA-256 `bea887fcf020c1dda1f44177c19c27a13f3b93c625b17194ac37e3d421a34fc4`). The fork started from upstream commit `3811ad0a87bd490e45099c3cb179ec33caf46cb5`.
 
 Guest memory in this Ripes build also has a host-memory cost.
 
@@ -318,17 +324,9 @@ The baseline build dequeues every state.
 
 The target searches for the requested solution instead of enumerating the full domain.
 
-For state updates, the original `quarter_turn()` assigns seven permutation bytes and seven orientation bytes and evaluates seven orientation remainders.
+For the per-move comparison below, **cubie-based updates refer to the original answer loop**, where `apply_move()` calls `quarter_turn()`. The original BFS expansion already uses factored transition tables; it does not copy cubie arrays for each edge.
 
-- `apply_move()` repeats it one, two, or three times, depending on the move.
-- Reusing that cubie-based procedure in a search would therefore write 14, 28, or 42 result bytes and evaluate 7, 14, or 21 orientation reductions for each child, before ranking the result.
-- These are explicit field assignments; extra compiler-generated structure copies are not counted.
-
-The original BFS already avoids this procedure in its expansion loop through factored tables, so this is a comparison with its answer loop, not a new saving attributed to BFS.
-
-The refined C stores all nine move results directly.
-
-The child update in `rv32_solve()` is:
+The revised child update in `rv32_solve()` is:
 
 ```c
         path[depth] = move;
@@ -336,26 +334,22 @@ The child update in `rv32_solve()` is:
         ori_stack[depth + 1] = ori_next[move][ori_stack[depth]];
 ```
 
-`move` selects a transition row, and the current rank selects an entry in that row. `path[depth]` records the chosen move; the new ranks are saved at `depth + 1`. This replaces repeated cubie updates and reranking in the search.
+`move` selects a table row; the current rank selects its entry. The new ranks go into the next depth slot, and `path[depth]` records the chosen move.
 
-- **Work for each accepted child:**
-  - An accepted child performs two transition-table reads, one for each rank, and two halfword rank-stack writes, for four bytes of saved state.
-  - The C expression also reads the current two ranks.
-- **Work that remains:**
-  - Move cursors, the path byte, face checks, and depth bookkeeping remain additional work; four bytes is not the total traffic of the entire loop.
-- **Uniform move cost:**
-  - Every child uses the same two table lookups, whether the move is a quarter, half, or inverse turn.
+| Operation per move | Original cubie-based update and ranking | Revised rank-based child update |
+| --- | --- | --- |
+| Cubie updates | 1, 2, or 3 quarter turns; 7, 14, or 21 modulo-3 reductions | No cubie reconstruction or orientation reduction |
+| Transition-table reads | None in `apply_move()`; the BFS expansion uses separate tables | Two halfword reads, one for each rank |
+| State writes | 14, 28, or 42 one-byte field assignments | Two halfword stack writes: four state bytes |
+| Ranking after the move | 21 piece comparisons and six base-three orientation updates | None; the input is ranked once before search |
 
-No cubie array is reconstructed or reranked in this loop.
+The counts follow directly from seven cubies: each quarter turn assigns seven position fields and seven orientation fields, while `apply_move()` repeats the turn one to three times. Ranking compares `6+5+4+3+2+1=21` piece pairs and encodes six independent orientations.
 
-The original `rank_state()` performs `6+5+4+3+2+1=21` piece comparisons and six base-three orientation updates per call.
+- **Uniform update cost:** all nine moves use the same two transition lookups, including half and inverse turns.
+- **Counting limits:** the new expressions also read the current ranks; move cursors, the path byte, face checks, and depth bookkeeping add work. The state-write count excludes compiler-generated structure copies and is not total memory traffic.
+- **Ranking savings:** for an emitted path of length `L`, ranking only the input removes `21L` later piece comparisons and `6L` orientation updates—231 comparisons and 66 updates for 11 moves. Rank-based IDA* also avoids reranking explored children that are later discarded.
 
-- Its answer loop calls it initially and after each of `L` emitted moves.
-- The new C parser performs the 21 comparisons and six orientation updates once, eliminating `21L` subsequent piece comparisons and `6L` orientation updates for a path of length `L`.
-- For an 11-move answer, those are 231 comparisons and 66 orientation updates.
-- During IDA* search, the same rank representation also avoids this work for every explored child, including children eventually discarded.
-
-The GUI renderer still updates cubies to draw actual moves; these savings describe the search and renderer-off measurement build.
+These are source-level counts for the search and renderer-off build. The GUI renderer still updates cubies to draw the moves.
 
 Same-face pruning happens before the transition accesses:
 
@@ -557,7 +551,7 @@ The full per-state log is retained in `evidence/depth11-rv32-iss.tsv` in the for
 
 The sample returns `R B' D2 R' B R' B' R D2 R B`. The solved and one-turn cases, including their pipeline counts, are listed under **Reproducing the representative tests**. These examples check target behavior; H3 supplies the full-domain optimality check.
 
-## LED Matrix and pipeline explanation
+## LED Matrix: visualizing the solution
 
 The GUI build is designed to drive a 35×25 LED Matrix as a six-face unfolded net.
 
@@ -590,17 +584,23 @@ The following crops show **input → intermediate state → solved state**. Each
 
 ![Ripes LED Matrix showing the scrambled sample input before the first move](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/led-initial.png)
 
+**Initial:** compare the mixed stickers with the solved net below; this is the sample input before the first move.
+
 [Full capture](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/ripes-led-initial.png)
 
 ![Ripes LED Matrix during the sample solution, with colors changed from the input](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/led-intermediate.png)
+
+**Intermediate:** the changed sticker arrangement shows that the returned moves are being applied to the cube state.
 
 [Full capture](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/ripes-led-intermediate.jpg)
 
 ![Ripes LED Matrix after all sample moves, with all six solved faces fully visible](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/led-final.png)
 
+**Solved:** all six faces are uniform, including the blue Back face at the right.
+
 [Full capture](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/ripes-led-final-full.jpg)
 
-### Five stages: following one instruction
+## Five-stage pipeline: following one instruction
 
 A five-stage processor splits instruction execution into the following work:
 
@@ -705,6 +705,8 @@ The trace follows `lhu t5, 0(t4)` at `0x230`. IF–EX captures were taken on Oct
 
 ![Ripes cycle 768: instruction 0x230 in IF, fetched word 0x000edf03](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/pipeline-if.png)
 
+**IF:** read `0x000edf03` at the Instruction memory output; it is the instruction word for the load at `0x230`.
+
 <details>
 <summary>Cycle and instruction evidence</summary>
 
@@ -724,6 +726,8 @@ The trace follows `lhu t5, 0(t4)` at `0x230`. IF–EX captures were taken on Oct
   - The preceding `add` is still producing `t4`. The register-file read is not necessarily the value the load will use in EX.
 
 ![Ripes cycle 769: instruction 0x230 in ID, LHU and register fields decoded](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/pipeline-id.png)
+
+**ID:** inspect Decode and Imm: LHU selects source x29 (`0x1d`), destination x30 (`0x1e`), and offset zero.
 
 <details>
 <summary>Cycle and instruction evidence</summary>
@@ -746,6 +750,8 @@ The ALU calculates the effective address, not the loaded value.
   - This is forwarding of the base address. The rank 720 will only become available after the memory read.
 
 ![Ripes cycle 770: instruction 0x230 in EX, forwarded base plus zero gives 0x1000001d](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/pipeline-ex.png)
+
+**EX:** follow the forwarding multiplexer into the ALU; base `0x1000001d` plus zero produces the effective address.
 
 <details>
 <summary>Cycle and instruction evidence</summary>
@@ -770,6 +776,8 @@ Enable **View → Show processor signal values** and inspect the Data memory blo
 
 ![Ripes cycle 771: current-rank load in MEM, address 0x1000001d, read data 0x2d0, memory write disabled](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/pipeline-mem.png)
 
+**MEM:** inspect Data memory: address `0x1000001d` returns `0x000002d0` (720), while the red `Wr en` indicates no write.
+
 <details>
 <summary>Cycle and instruction evidence</summary>
 
@@ -790,6 +798,8 @@ Enable **View → Show processor signal values** and inspect the Data memory blo
 
 ![Ripes cycle 772: WB selects loaded memory data 0x2d0 for destination x30](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/pipeline-wb.png)
 
+**WB:** the writeback multiplexer selects `0x000002d0` for destination x30 (`0x1e`); this is the loaded rank, not its address.
+
 <details>
 <summary>Cycle and instruction evidence</summary>
 
@@ -802,6 +812,8 @@ Enable **View → Show processor signal values** and inspect the Data memory blo
 The register file's `Wr En` indicator is green at cycle 772. This write port is controlled by WB even though the register file is drawn beside ID. The dependent `slli` receives the loaded value through forwarding and computes `0x000005a0` (`720×2`) in EX.
 
 ![Ripes cycle 772: register write enabled and the dependent shift computes byte offset 0x5a0](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/pipeline-regwrite.png)
+
+**Write enable and forwarding:** the green register-file `Wr En` accompanies the load in WB; the dependent shift in EX produces byte offset `0x000005a0`.
 
 <details>
 <summary>Cycle and instruction evidence</summary>
@@ -822,6 +834,8 @@ rather than assigning every visible control wire to that instruction.
 At cycle 773, x30 (`t5`) contains `0x000002d0` (720), and the dependent `slli` is in MEM. This is the current permutation rank. The move's transition lookup occurs later at `0x23c`, in `lhu t2, 0(t2)`.
 
 ![Ripes at cycle 773: x30 (t5) contains the loaded value 0x000002d0](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/pipeline-result.png)
+
+**Register result:** at cycle 773, the highlighted x30 (`t5`) row contains `0x000002d0`, confirming that rank 720 was written.
 
 <details>
 <summary>Cycle and instruction evidence</summary>
@@ -854,6 +868,8 @@ The images show the one-cycle delay: at cycle 771 the load is in MEM and the shi
 The startup timeline provides another example: `lbu x29, 0(x5)` followed by `addi x30, x29, -49`. The dependent instruction has a dash before EX while the load advances.
 
 ![Ripes Pipeline diagram showing five stages and a parser load-use stall](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/crops/pipeline-timeline.png)
+
+**Load-use stall:** follow `lbu x29, 0(x5)` and the next `addi`; the dash at cycle 10 delays the dependent instruction before EX.
 
 [Full capture](https://raw.githubusercontent.com/EricHuang0302/minirubik/codex/hw1-c-solver/evidence/ripes-pipeline-timeline.jpg)
 
