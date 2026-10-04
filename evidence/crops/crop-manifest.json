@@ -1,0 +1,212 @@
+[
+  {
+    "source": "evidence/ripes-pipeline-if.jpg",
+    "output": "evidence/crops/pipeline-if.png",
+    "box": [
+      167,
+      357,
+      486,
+      638
+    ]
+  },
+  {
+    "source": "evidence/ripes-pipeline-if.jpg",
+    "output": "evidence/crops/pipeline-if-context.png",
+    "box": [
+      1429,
+      1158,
+      1574,
+      682
+    ]
+  },
+  {
+    "source": "evidence/ripes-pipeline-id.jpg",
+    "output": "evidence/crops/pipeline-id.png",
+    "box": [
+      610,
+      357,
+      536,
+      638
+    ]
+  },
+  {
+    "source": "evidence/ripes-pipeline-id.jpg",
+    "output": "evidence/crops/pipeline-id-context.png",
+    "box": [
+      1429,
+      1158,
+      1574,
+      682
+    ]
+  },
+  {
+    "source": "evidence/ripes-pipeline-ex.jpg",
+    "output": "evidence/crops/pipeline-ex.png",
+    "box": [
+      1079,
+      357,
+      640,
+      638
+    ]
+  },
+  {
+    "source": "evidence/ripes-pipeline-ex.jpg",
+    "output": "evidence/crops/pipeline-ex-context.png",
+    "box": [
+      1429,
+      1158,
+      1574,
+      682
+    ]
+  },
+  {
+    "source": "evidence/ripes-signals-mem.jpg",
+    "output": "evidence/crops/pipeline-mem.png",
+    "box": [
+      585,
+      357,
+      441,
+      638
+    ]
+  },
+  {
+    "source": "evidence/ripes-signals-mem.jpg",
+    "output": "evidence/crops/pipeline-mem-context.png",
+    "box": [
+      1429,
+      1158,
+      1574,
+      682
+    ]
+  },
+  {
+    "source": "evidence/ripes-signals-wb.jpg",
+    "output": "evidence/crops/pipeline-wb.png",
+    "box": [
+      912,
+      357,
+      340,
+      638
+    ]
+  },
+  {
+    "source": "evidence/ripes-signals-wb.jpg",
+    "output": "evidence/crops/pipeline-wb-context.png",
+    "box": [
+      1429,
+      1158,
+      1574,
+      682
+    ]
+  },
+  {
+    "source": "evidence/ripes-signals-regwrite.jpg",
+    "output": "evidence/crops/pipeline-regwrite.png",
+    "box": [
+      897,
+      532,
+      917,
+      334
+    ]
+  },
+  {
+    "source": "evidence/ripes-signals-regwrite.jpg",
+    "output": "evidence/crops/pipeline-regwrite-context.png",
+    "box": [
+      1429,
+      1158,
+      1574,
+      682
+    ]
+  },
+  {
+    "source": "evidence/ripes-pipeline-result.jpg",
+    "output": "evidence/crops/pipeline-result.png",
+    "box": [
+      1938,
+      1043,
+      1028,
+      240
+    ]
+  },
+  {
+    "source": "evidence/ripes-pipeline-timeline.jpg",
+    "output": "evidence/crops/pipeline-timeline.png",
+    "box": [
+      20,
+      159,
+      1420,
+      574
+    ]
+  },
+  {
+    "source": "evidence/baseline-64k-rv32-iss.png",
+    "output": "evidence/crops/memory-64k.png",
+    "box": [
+      1,
+      1,
+      750,
+      202
+    ]
+  },
+  {
+    "source": "evidence/baseline-1m-rv32-iss.png",
+    "output": "evidence/crops/memory-1m.png",
+    "box": [
+      1,
+      1,
+      756,
+      202
+    ]
+  },
+  {
+    "source": "evidence/baseline-1m-rv32-5s.png",
+    "output": "evidence/crops/memory-5s.png",
+    "box": [
+      1,
+      1,
+      604,
+      149
+    ]
+  },
+  {
+    "source": "evidence/ripes-led-initial.png",
+    "output": "evidence/crops/led-initial.png",
+    "box": [
+      543,
+      646,
+      510,
+      444
+    ]
+  },
+  {
+    "source": "evidence/ripes-led-intermediate.jpg",
+    "output": "evidence/crops/led-intermediate.png",
+    "box": [
+      560,
+      94,
+      510,
+      444
+    ]
+  },
+  {
+    "source": "evidence/ripes-led-final-full.jpg",
+    "output": "evidence/crops/led-final.png",
+    "box": [
+      560,
+      94,
+      510,
+      444
+    ]
+  },
+  {
+    "source": "evidence/ripes-pipeline-result.jpg",
+    "output": "evidence/crops/pipeline-result-context.png",
+    "box": [
+      1429,
+      1158,
+      1574,
+      682
+    ]
+  }
+]
