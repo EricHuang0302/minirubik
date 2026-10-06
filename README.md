@@ -108,6 +108,7 @@ Because `ORIENTATIONS` is 729, this assigns a distinct index to each valid pair 
 > **Info**
 >
 > The seventh orientation is determined by the other six. The zero-sum modulo-3 condition is an orientation invariant, not a permutation-parity condition.
+
 The implementation also avoids reconstructing a complete cube state for every BFS edge.
 
 - It precomputes quarter-turn transitions separately for permutation and orientation because each component evolves independently under a turn.
@@ -147,6 +148,7 @@ uint16_t permutation[3][PERMUTATIONS], orientation[3][ORIENTATIONS];
 > **Warning**
 >
 > The 18,405,414-byte figure is the original C program's peak for these working arrays, not its static-data size. It conflicts with the assignment's 128 KiB static-data limit when the same arrays are reserved in a heap-free assembly program.
+
 ### Measurement environment
 
 Measurements use Ripes `v2.2.6-106-g5b8a616` on this Mac (binary SHA-256 `bea887fcf020c1dda1f44177c19c27a13f3b93c625b17194ac37e3d421a34fc4`). The fork started from upstream commit `3811ad0a87bd490e45099c3cb179ec33caf46cb5`.
@@ -840,6 +842,7 @@ The register file's `Wr En` indicator is green at cycle 772. This write port is 
 > A load in WB, an arithmetic instruction in EX, and a stall bubble in MEM
 > can coexist. The correct trace follows one instruction across clock cycles
 > rather than assigning every visible control wire to that instruction.
+
 At cycle 773, x30 (`t5`) contains `0x000002d0` (720), and the dependent `slli` is in MEM. This is the current permutation rank. The move's transition lookup occurs later at `0x23c`, in `lhu t2, 0(t2)`.
 
 ![Ripes at cycle 773: x30 (t5) contains the loaded value 0x000002d0](evidence/crops/pipeline-result.png)
