@@ -1,4 +1,4 @@
-# Mini-Rubik on RV32I: Development Notes
+# Computer Architecture — Homework 1:Mini-Rubik on RV32I
 
 ## AI Tools Usage
 
@@ -7,6 +7,16 @@ OpenAI Codex was used for:
 - Conceptual Explanation and Code debugging
 - Code Annotation
 - Translation and Technical Writing (Polishing)
+
+## Project Overview
+
+This report documents the improvements to [sysprog21/minirubik](https://github.com/sysprog21/minirubik), the supplied C solver for the **2×2×2 Rubik’s Cube**, for [Computer Architecture Homework 1](https://hackmd.io/@sysprog/2026-arch-homework1). The implementation and measurement evidence are available in [my fork](https://github.com/EricHuang0302/minirubik).
+
+- **Original project:** builds a complete breadth-first search (BFS) table to return a shortest solution for every valid cube state.
+- **Revised design:** uses smaller transition and distance tables with IDA* to solve a requested input while preserving shortest solutions.
+- **Ripes implementation:** translates the revised algorithm into RV32I assembly, verifies memory and instruction limits, and demonstrates the solution on an LED Matrix and instruction execution in a five-stage pipeline.
+
+Stages 1–4 explain the original constraints, search design, C improvements, and RV32I implementation; the later sections present visual demonstrations and reproducible measurements.
 
 ## Summary
 
