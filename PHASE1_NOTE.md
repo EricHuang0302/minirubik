@@ -26,21 +26,15 @@ BFS therefore discovers states in increasing order of solution length.
 
 Read the solution from left to right. Each space-separated token is one move.
 
-| Symbol | Face |
-| --- | --- |
-| `R` | Right |
-| `B` | Back |
-| `D` | Down |
+| Face | 90° clockwise | 90° counterclockwise | 180° |
+| --- | --- | --- | --- |
+| Right | `R` | `R'` | `R2` |
+| Back | `B` | `B'` | `B2` |
+| Down | `D` | `D'` | `D2` |
 
-Clockwise and counterclockwise are defined **while looking directly at the face being turned**.
+Clockwise and counterclockwise are defined **while looking directly at the face being turned**. For a 180° turn, either direction gives the same result. **Each of the nine operations counts as one move** in this assignment's half-turn metric (HTM).
 
-| Notation | Turn |
-| --- | --- |
-| `R` | 90° clockwise |
-| `R'` | 90° counterclockwise |
-| `R2` | 180°; either direction gives the same result |
-
-The same suffix rules apply to `B` and `D`. For example, `R B' D2` means turn Right 90° clockwise, Back 90° counterclockwise, then Down 180°: three moves. A 180° turn also counts as one move in this assignment's HTM metric.
+For example, `R B' D2` means turn Right 90° clockwise, Back 90° counterclockwise, then Down 180°: three moves.
 
 The decisive part of [`build_table()`](https://github.com/sysprog21/minirubik/blob/3811ad0a87bd490e45099c3cb179ec33caf46cb5/solver.c#L237-L241) runs when BFS reaches a state for the first time:
 
