@@ -1,256 +1,954 @@
-# minirubik
+# Mini-Rubik on RV32I: Development Notes
 
-An optimal C99 solver for the 2×2×2 Rubik’s Cube. It builds a breadth-first
-table for all 3,674,160 states and solves every valid position in at most 11
-half-turn-metric moves.
+## AI Tools Usage
 
-## Why a cube is a graph
+OpenAI Codex was used for:
 
-Ernő Rubik created the original cube in 1974 to demonstrate how parts can move
-independently without breaking the whole. A 3×3 cube has 20 moving pieces and
-about 4.3 × 10¹⁹ reachable arrangements. The smaller 2×2 cube keeps the eight
-corners and removes the edges and fixed centers. [Philo Li’s formula-free
-introduction](https://philoli.com/zh/blog/solve-rubiks-cube-without-formulas/)
-offers the key intuition: every turn is reversible, turns can be composed, and
-their order matters—`R U` is generally not `U R`.
+- Conceptual Explanation and Code debugging
+- Code Annotation
+- Translation and Technical Writing (Polishing)
 
-Human solvers use those facts to move a few pieces while restoring the rest;
-the commutator `A B A⁻¹ B⁻¹` is the standard example. This program uses the
-same group structure differently: it treats every valid arrangement as a node,
-every face turn as an edge, and searches the entire graph once. It does not use
-the article’s 3×3 Roux stages or a library of memorized algorithms.
+This repository contains the C and RV32I implementation and evidence for Computer Architecture Homework 1. It is forked from [sysprog21/minirubik](https://github.com/sysprog21/minirubik); the original analysis remains in [report.md](report.md).
 
-The solver gives the eight corner positions the numbers `0–7`. The 2.5D
-walkthrough below shows where those numbers are on the physical cube.
+Read the [English HackMD note](https://hackmd.io/QgfzDDZsT_2m8qy0hNfYsw) for the course report. [PHASE1_NOTE.md](PHASE1_NOTE.md) retains its HackMD source; this README adapts the same report for GitHub.
 
-## How it works
+## Contents
 
-1. Fix one corner to remove whole-cube rotations.
-2. Rank the remaining corner permutation and six independent orientations into
-   a dense integer.
-3. Breadth-first search outward from solved using `R`, `B`, and `D`, including
-   inverse and half turns.
-4. Store one move toward solved for every state; following those moves gives an
-   optimal solution of at most 11 moves.
+- [Stage 1: Original solver and target constraints](#stage-1-original-solver-and-target-constraints)
+- [Stage 2: Representation and optimal search](#stage-2-representation-and-optimal-search)
+- [Stage 3: C refinement](#stage-3-c-refinement-before-assembly) and [Stage 4: RV32I translation](#stage-4-rv32i-translation-and-measured-refinement)
+- [LED Matrix](#led-matrix-visualizing-the-solution) and [five-stage pipeline](#five-stage-pipeline-following-one-instruction)
+- [Reproducing the tests](#reproducing-the-representative-tests), [development revisions](#development-revisions), and [references](#references)
 
-## Build and run
+## Summary
 
-```sh
-make
-make check
-make prove   # optional: Frama-C WP proof, needs frama-c and alt-ergo
-./solver 21345671111111
+The original solver builds a complete BFS answer table whose working arrays are too large for the 128 KiB target budget. The revised solver uses smaller transition and distance tables with IDA* to find a shortest solution for each input. Validation passed H1–H3 and host path replay over all 3,674,160 states; the RV32I build uses 109,813 static-data bytes and stays below 50 million retired instructions on all 2,644 distance-11 inputs.
+
+## Stage 1: Original solver and target constraints
+
+The starting point for this assignment is [`solver.c` at upstream commit `3811ad0`](https://github.com/sysprog21/minirubik/blob/3811ad0a87bd490e45099c3cb179ec33caf46cb5/solver.c).
+
+- Its principal strength is that it computes an exact answer for every valid cube state.
+- The program starts at the solved cube and performs breadth-first search (BFS) over the entire reachable state space.
+- All nine allowed turns have equal cost in the half-turn metric: `R`, `R2`, and `R'`, for example, each count as one move.
+
+BFS therefore discovers states in increasing order of solution length.
+
+**Reading the move notation**
+
+Read the solution from left to right. Each space-separated token is one move.
+
+| Symbol | Face |
+| --- | --- |
+| `R` | Right |
+| `B` | Back |
+| `D` | Down |
+
+Clockwise and counterclockwise are defined **while looking directly at the face being turned**.
+
+| Notation | Turn |
+| --- | --- |
+| `R` | 90° clockwise |
+| `R'` | 90° counterclockwise |
+| `R2` | 180°; either direction gives the same result |
+
+The same suffix rules apply to `B` and `D`. For example, `R B' D2` means turn Right 90° clockwise, Back 90° counterclockwise, then Down 180°: three moves. A 180° turn also counts as one move in this assignment's HTM metric.
+
+The decisive part of [`build_table()`](https://github.com/sysprog21/minirubik/blob/3811ad0a87bd490e45099c3cb179ec33caf46cb5/solver.c#L237-L241) runs when BFS reaches a state for the first time:
+
+```c
+if (toward_solved[there] == UINT8_MAX) {
+    uint8_t move = (uint8_t) (face * 3U + turn);
+    toward_solved[there] = inverse_move[move];
+    queue[tail++] = there;
+}
 ```
 
-`make` builds two binaries. `solver` is the documented one, with contracts, a
-`--self-test` mode, and diagnostics on stderr. `mini` is a golfed variant that
-solves the same input and prints the same line, kept as a readability contrast;
-it has no `--self-test` and prints nothing on failure, and it trades roughly
-eight times the runtime and three times the memory for its brevity.
+`there` is the newly reached state. The program stores the inverse turn, which leads back to a state in the preceding BFS layer. Repeating those stored turns therefore gives a shortest solution, rather than simply a sequence that solves the cube.
 
-The 14-digit argument describes the scramble and the printed line is the
-solution. Both formats are explained below.
+The state representation makes complete enumeration practical on a host computer.
 
-### C prototype for the RV32I assignment
+- **Permutation:**
+  - With one corner fixed as a reference, `p[]` identifies the pieces in the seven remaining positions and `o[]` records their orientations.
+  - There are `7! = 5,040` possible permutations.
+- **Orientation:**
+  - The sum of the seven orientations must be zero modulo 3, leaving six independent values and `3^6 = 729` orientation combinations.
+- **Combined state index:**
+  - The resulting `5,040 × 729 = 3,674,160` states have dense integer indices: `rank_state()` assigns an index to a valid state, and `unrank_state()` reconstructs it.
+
+**The fully solved state**
+
+The target state is `12345671111111`. For readability, split it as `1234567 | 1111111`; the actual input contains no spaces or `|`.
+
+- **First seven digits, `1234567`: correct cubie positions.**
+  - Positions 1–7 contain cubies 1–7 respectively.
+- **Last seven digits, `1111111`: correct cubie orientations.**
+  - The cubie at each position has orientation digit `1`, corresponding to internal orientation value 0.
+
+Both parts must match for the cube to be solved. A sequence such as `R B' D2 …` describes the moves that reach this state, not the state string itself.
+
+The solved state has index zero.
+
+The reachable states form the group `⟨R, B, D⟩`, generated by turns of the three faces opposite the fixed corner.
+
+- Its Cayley graph has one vertex per state and nine half-turn-metric edges from each vertex.
+- The full BFS reaches every vertex; its last nonempty layer is depth 11, with 2,644 states.
+- Thus at least one state needs 11 moves, and none needs more.
+
+The final lines of [`rank_state()`](https://github.com/sysprog21/minirubik/blob/3811ad0a87bd490e45099c3cb179ec33caf46cb5/solver.c#L118-L120) encode the first six orientations as a base-three number and combine it with the permutation rank `p`:
+
+```c
+for (uint8_t i = 0; i < 6; ++i)
+    o = o * 3U + state->o[i];
+return p * ORIENTATIONS + o;
+```
+
+Because `ORIENTATIONS` is 729, this assigns a distinct index to each valid pair of ranks. Dense indices let the BFS queue and the answer table use arrays rather than separate objects or a hash table for every state.
+
+> **Info**
+>
+> The seventh orientation is determined by the other six. The zero-sum modulo-3 condition is an orientation invariant, not a permutation-parity condition.
+The implementation also avoids reconstructing a complete cube state for every BFS edge.
+
+- It precomputes quarter-turn transitions separately for permutation and orientation because each component evolves independently under a turn.
+- The tables have `3 × 5,040` and `3 × 729` entries respectively.
+- At two bytes per entry, their combined size is `3 × (5,040 + 729) × 2 = 34,614` bytes.
+- BFS can then advance the two indices with table lookups.
+
+This factorization is useful beyond the original solver: it gives the later RV32I version a tested move model from which to generate its own transition data.
+
+Once the table is built, each query follows stored moves to state zero in at most 11 steps. The supplied CLI rebuilds this table on every invocation.
+
+The original program also provides a correctness reference:
+
+- `parse_state()` and `valid()` reject malformed cube descriptions.
+- The self-test checks inverse moves, ranking/unranking for every state, full reachability, and a diameter of 11.
+
+These exhaustive results serve as the oracle for checking the smaller target solver.
+
+### Why the original solver does not fit Ripes
+
+Building the complete BFS table exceeds the target budget. The three dominant allocations appear in [`build_table()`](https://github.com/sysprog21/minirubik/blob/3811ad0a87bd490e45099c3cb179ec33caf46cb5/solver.c#L191-L195):
+
+```c
+uint8_t *toward_solved = malloc(STATES);
+uint32_t *queue = malloc((size_t) STATES * sizeof *queue);
+uint16_t permutation[3][PERMUTATIONS], orientation[3][ORIENTATIONS];
+```
+
+- **Original working arrays:**
+  - The one-byte-per-state answer table uses 3,674,160 bytes.
+  - The queue holds up to 3,674,160 four-byte state indices, or 14,696,640 bytes.
+  - The factored transition tables occupy another 34,614 bytes, giving 18,405,414 bytes for these three allocations at their peak.
+  - The queue alone accounts for nearly 80% of that amount.
+- **Target constraints:**
+  - The homework limits static data in the RV32I program to 128 KiB, or 131,072 bytes, and the hand-written assembly cannot rely on the C heap.
+
+> **Warning**
+>
+> The 18,405,414-byte figure is the original C program's peak for these working arrays, not its static-data size. It conflicts with the assignment's 128 KiB static-data limit when the same arrays are reserved in a heap-free assembly program.
+### Measurement environment
+
+Measurements use Ripes `v2.2.6-106-g5b8a616` on this Mac (binary SHA-256 `bea887fcf020c1dda1f44177c19c27a13f3b93c625b17194ac37e3d421a34fc4`). The fork started from upstream commit `3811ad0a87bd490e45099c3cb179ec33caf46cb5`.
+
+Guest memory in this Ripes build also has a host-memory cost.
+
+- In the recorded terminal captures, the [64 KiB run](https://hackmd.io/_uploads/SyjDnd9cfg.png) reached a maximum resident set size of 73,842,688 host bytes, while the [1 MiB run](https://hackmd.io/_uploads/SJjP3_95Ge.png) reached 121,913,344 bytes.
+- Subtracting the smaller run removes most of the simulator's fixed cost.
+- The measured slope is `(121,913,344 - 73,842,688) / (1,048,576 - 65,536) = 48.9` additional host bytes per additional guest byte.
+- Scaling that slope to the baseline's 18,405,414 guest bytes suggests approximately 900 MB of additional host memory, before fixed simulator overhead.
+
+This is an extrapolation from two runs, not a direct run of the complete BFS or a guarantee about other Ripes builds.
+
+The 64 KiB run on `RV32_ISS`:
+
+![64 KiB Ripes memory probe on RV32_ISS](evidence/crops/memory-64k.png)
+
+[Full capture](evidence/baseline-64k-rv32-iss.png)
+
+The 1 MiB run on `RV32_ISS`:
+
+![1 MiB Ripes memory probe on RV32_ISS](evidence/crops/memory-1m.png)
+
+[Full capture](evidence/baseline-1m-rv32-iss.png)
+
+Memory is only one constraint.
+
+- Complete BFS visits 3,674,160 states and considers nine turns from each one, yielding 33,067,440 edges.
+- Each edge advances both a permutation and an orientation transition, for 66,134,880 transition updates.
+- If a direct RV32I translation took about 15 retired instructions per update, it would already approach one billion instructions before other work; **15 is an assumption for estimating scale, not a measured instruction count**.
+- In the recorded 1 MiB captures, both processor models retired 1,048,581 instructions. The `RV32_ISS` model reported 41 ms, or about 25.6 million retired instructions per second; the [visual `RV32_5S` model](https://hackmd.io/_uploads/r1sP2u55Gl.png) reported 2,338 ms, or about 0.448 million per second. These are rates for the memory loop, not measurements of the original BFS.
+
+They show why building the whole table inside a visual pipeline simulator would be a poor starting design.
+
+The same 1 MiB run on the `RV32_5S` pipeline model:
+
+![1 MiB Ripes memory probe on RV32_5S](evidence/crops/memory-5s.png)
+
+[Full capture](evidence/baseline-1m-rv32-5s.png)
+
+There is also an instruction-set mismatch. The original code recovers its two indices from a combined state number using division and remainder:
+
+```c
+uint16_t p = (uint16_t) (here / ORIENTATIONS);
+uint16_t o = (uint16_t) (here % ORIENTATIONS);
+```
+
+RV32I has no `div`, `rem`, or `mul` instruction.
+
+- The rank calculation and index recombination use multiplication as well.
+- A direct translation would have to replace those operations with longer instruction sequences or helper routines, adding cost inside the table-building path.
+
+The target therefore needs a smaller representation and search while preserving shortest solutions.
+
+### Reconsidering report.md section 7
+
+[Section 7 of the original report](https://github.com/sysprog21/minirubik/blob/3811ad0a87bd490e45099c3cb179ec33caf46cb5/report.md#7-implementation-notes-and-possible-improvements) argues that the complete table is a verification artifact: exhaustive construction checks reachability and the depth distribution on every run.
+
+On a host, the reported construction time and memory use are affordable. Rebuilding the table verifies the move model, although a process answering only one query gains little from its fast lookup.
+
+The proposed queue-free level sweep does not make that design suitable for this target.
+
+- It still retains 3,674,160 answer bytes and 34,614 transition bytes, or 3,708,774 bytes, about 28.3 times the 128 KiB budget.
+- Its 12 full scans also perform 44,089,920 table-entry inspections before accounting for edge expansion.
+- Moving the tables from stack to heap or static storage changes their lifetime and location, but not that cost.
+
+Ripes additionally pays sparse host-memory overhead and simulated instructions for the construction itself.
+
+Verification need not be performed by the same processor that answers the query.
+
+- **Host-side verification:**
+  - The complete BFS distance table remains a host-side oracle in `tools/check_rv32_c.c`: H1 compares the heuristic with exact distances, and H3 checks the new search over the entire domain.
+- **Target-side execution:**
+  - The target carries only factored transitions, projected distance tables, and a bounded search stack.
+  - It computes the path on RV32I and replays that path before printing it.
+- **Result:**
+  - This preserves exhaustive evidence on the host without linking a complete answer or distance table into the target.
+
+Path replay checks that a returned path solves the cube; optimality is supported separately by admissibility and the exhaustive length comparison.
+
+## Stage 2: Representation and optimal search
+
+The target solver keeps a permutation rank `P` in `[0,5039]` and an orientation rank `O` in `[0,728]`.
+
+- The seventh twist is reconstructed from the modulo-3 constraint.
+- The total state count is their product.
+- We generate nine transition rows for each rank component directly from the original cube model.
+- They occupy 90,720 bytes for permutations and 13,122 bytes for orientations. A reverse BFS on each projected graph gives a 5,040-byte permutation distance table and a 729-byte orientation distance table.
+
+Their maximum values are 7 and 6 respectively; both solved entries are zero.
+
+For a full state `s`, define `h(s)=max(dP(P(s)),dO(O(s)))`.
+
+- Any real cube move projects to one edge in each smaller graph.
+- Projecting a shortest full path therefore gives a path of no greater length in either projection.
+- Thus `dP(P(s))≤d(s)` and `dO(O(s))≤d(s)`, so `h(s)≤d(s)`.
+- The maximum is an admissible lower bound. Iterative deepening A* searches with increasing `depth+h` bounds and returns as soon as it reaches solved; this returns a shortest HTM path. Its explicit depth-12 stack uses no heap or recursion.
+
+Consecutive turns of the same face are skipped because two such turns can be combined into at most one HTM move.
+
+```c
+uint8_t perm_steps = perm_distance[perm];
+uint8_t ori_steps = ori_distance[ori];
+return perm_steps > ori_steps ? perm_steps : ori_steps;
+```
+
+The two projected searches may each need fewer moves than the full cube, so the code takes their maximum rather than adding them. The distance tables are byte-valued; no packed accessor is used.
+
+The host checker computed exact BFS distances for every one of the 3,674,160 states.
+
+- It checked `h≤d` everywhere (H1), all transition and distance table ranges and solved entries (H2), and the solver's exact path length against BFS everywhere (H3).
+- It also replayed each returned path to solved (T5 on the host).
+- H4 does not apply because no packed accessor is used.
+- The current exhaustive host check passed on September 30, 2026, in 203.73 seconds of wall-clock time.
+
+The host checker found the maximum number of expanded IDA* nodes at input `54721631111111` (permutation/orientation rank 2,437,047): 106,635 nodes.
+
+### A one-move IDA* walkthrough
+
+For input `25314672313211`, the parser produces `P=1104` and `O=426`.
+Both projected distance entries equal 1, so the first bound is
+`limit=max(1,1)=1`. At the root, `depth=0` and `depth+h=1`, so the
+search may try a move. The following values were read from the same tables
+used by `rv32_c.c`:
+
+| Candidate | Child `(P,O)` | Child `h` | `depth+h` | Decision at bound 1 |
+| --- | --- | ---: | ---: | --- |
+| `R` | `(3294,0)` | 1 | 2 | Prune and return to the root |
+| `R2` | `(2190,426)` | 1 | 2 | Prune and return to the root |
+| `R'` | `(0,0)` | 0 | 1 | Return the one-move solution |
+
+A pruned child is discarded by decreasing `depth`; the root's `next_move[0]` remembers which candidate comes next.
+
+- No complete visited-state set is retained.
+- For the required 11-move input, the initial bound is 7; unsuccessful searches at bounds 7, 8, 9, and 10 precede the successful search at 11.
+- This is IDA*: a depth-first search repeated under increasing `depth+h` bounds.
+
+It does not maintain an A* priority queue.
+
+## Stage 3: C refinement before assembly
+
+The C implementation is [`rv32_c.c`](rv32_c.c).
+
+- It ranks the input only once, then the hot search loop performs table lookups and additions rather than cube-array copies, modulo, multiplication, or division.
+- The `perm_stack`, `ori_stack`, and `next_move` arrays are fixed-size depth stacks.
+- The host generator [`tools/gen_rv32_tables.c`](tools/gen_rv32_tables.c) uses the original `solver.c` move definitions to produce the exact same tables for the C and assembly builds.
+
+This keeps the semantic source of cube moves in one place.
+
+### Rank once and keep a bounded search stack
+
+The entry point parses the input before starting the search. This excerpt from `rv32_solve_input()` shows where the two ranks are produced:
+
+```c
+uint16_t perm, ori;
+if (!rv32_parse(input, &perm, &ori))
+    return -2;
+return rv32_solve(perm, ori, path, expanded);
+```
+
+`rv32_parse()` validates the string and writes `perm` and `ori`. The search then receives those ranks directly; it never calls the parser for a child state.
+
+At the start of `rv32_solve()`, storage is fixed by the maximum solution length:
+
+```c
+uint16_t perm_stack[MAX_DEPTH + 1], ori_stack[MAX_DEPTH + 1];
+uint8_t next_move[MAX_DEPTH + 1];
+uint8_t limit = min_remaining_moves(start_perm, start_ori);
+```
+
+- **State storage:** `perm_stack` and `ori_stack` keep one pair of ranks per depth, including the root. With `MAX_DEPTH=11`, each has 12 halfwords, or 24 bytes.
+- **Search progress:** `next_move` remembers the next candidate at each depth. Returning from a child resumes that cursor.
+- **Initial bound:** `min_remaining_moves()` reads the projected distances described in Stage 2. No BFS table is constructed here.
+
+### What changes in the C operation count
+
+Two comparisons are useful here: the original BFS construction versus target-side search, and the original cubie-based answer loop versus rank-based state updates. They are different workloads; the counts below are source-level operations, not retired RV32I instructions or a claim that each operation becomes one instruction.
+
+The baseline build dequeues every state.
+
+- Splitting each combined rank requires one division and one remainder by 729, giving 3,674,160 of each.
+- Its nine outgoing edges per state perform 66,134,880 halfword transition lookups and 33,067,440 expressions of the form `next_p * 729 + next_o`.
+- Each edge also probes the answer table, and each newly discovered state writes an answer byte and a queue entry.
+- The new target search retains separate ranks, so its hot loop needs zero combined-rank divisions, remainders, or recombinations. It also allocates no full-domain queue or answer table.
+
+The target searches for the requested solution instead of enumerating the full domain.
+
+For the per-move comparison below, **cubie-based updates refer to the original answer loop**, where `apply_move()` calls `quarter_turn()`. The original BFS expansion already uses factored transition tables; it does not copy cubie arrays for each edge.
+
+The revised child update in `rv32_solve()` is:
+
+```c
+        path[depth] = move;
+        perm_stack[depth + 1] = perm_next[move][perm_stack[depth]];
+        ori_stack[depth + 1] = ori_next[move][ori_stack[depth]];
+```
+
+`move` selects a table row; the current rank selects its entry. The new ranks go into the next depth slot, and `path[depth]` records the chosen move.
+
+| Operation per move | Original cubie-based update and ranking | Revised rank-based child update |
+| --- | --- | --- |
+| Cubie updates | 1, 2, or 3 quarter turns; 7, 14, or 21 modulo-3 reductions | No cubie reconstruction or orientation reduction |
+| Transition-table reads | None in `apply_move()`; the BFS expansion uses separate tables | Two halfword reads, one for each rank |
+| State writes | 14, 28, or 42 one-byte field assignments | Two halfword stack writes: four state bytes |
+| Ranking after the move | 21 piece comparisons and six base-three orientation updates | None; the input is ranked once before search |
+
+The counts follow directly from seven cubies: each quarter turn assigns seven position fields and seven orientation fields, while `apply_move()` repeats the turn one to three times. Ranking compares `6+5+4+3+2+1=21` piece pairs and encodes six independent orientations.
+
+- **Uniform update cost:** all nine moves use the same two transition lookups, including half and inverse turns.
+- **Counting limits:** the new expressions also read the current ranks; move cursors, the path byte, face checks, and depth bookkeeping add work. The state-write count excludes compiler-generated structure copies and is not total memory traffic.
+- **Ranking savings:** for an emitted path of length `L`, ranking only the input removes `21L` later piece comparisons and `6L` orientation updates—231 comparisons and 66 updates for 11 moves. Rank-based IDA* also avoids reranking explored children that are later discarded.
+
+These are source-level counts for the search and renderer-off build. The GUI renderer still updates cubies to draw the moves.
+
+Same-face pruning happens before the transition accesses:
+
+```c
+if (depth && move_face[move] == move_face[path[depth - 1]])
+    continue;
+```
+
+After the root, three of the nine move candidates are skipped, leaving at most six children.
+
+- **Avoided work:**
+  - For a node whose cursor examines all nine candidates, this avoids six transition-table reads and six rank-stack writes, as well as entering those three child nodes.
+- **Interpretation of the reduction:**
+  - All nine candidate checks still occur, so this is a one-third reduction in possible child generation, not a measured one-third reduction in total runtime.
+- **Heuristic evaluation:**
+  - A heuristic evaluation reads two distance bytes and takes their maximum on the first visit to a node; `next_move[depth]` prevents repeating it when that same node resumes after a child returns.
+
+A later IDA* bound can revisit and reevaluate the state.
+
+### Check the bound only on entry to a node
+
+The first lines of the first-visit block are shown below; the solved-state check and expansion counter follow in the source:
+
+```c
+        if (next_move[depth] == 0) {
+            uint8_t remaining =
+                min_remaining_moves(perm_stack[depth], ori_stack[depth]);
+            if (depth + remaining > limit)
+                goto backtrack;
+```
+
+- **First visit:** a new depth starts with `next_move[depth]=0`, so its heuristic is evaluated once.
+- **Pruning:** if the moves already taken plus the lower bound exceed `limit`, `goto backtrack` returns to the previous depth. For example, depth 2 plus a lower bound of 4 cannot fit within limit 5.
+- **Resume:** the candidate cursor advances before descending. When a child returns, the parent continues with its saved cursor instead of recomputing the same heuristic.
+
+These choices spend memory to simplify the inner loop.
+
+- **Additional table storage:**
+  - Nine direct move rows occupy 103,842 bytes, versus 34,614 bytes for three quarter-turn rows: an increase of 69,228 bytes.
+  - The two byte-distance tables add 5,769 bytes, giving 109,611 table bytes.
+- **Operations avoided:**
+  - Byte distances avoid packed-nibble extraction, and four-byte row pointers avoid multiplying by a non-power-of-two row stride at runtime.
+- **Remaining memory budget:**
+  - The assembled program's total static data is 109,813 bytes, leaving 21,259 bytes below the limit.
+
+The linked measurement build uses 109,813 bytes of `.data`, zero `.bss`, and zero `.rodata`. The instruction-count comparison appears in Stage 4; the C build uses `riscv64-elf-gcc -O2 -march=rv32i -mabi=ilp32` and a freestanding Ripes entry point.
+
+## Stage 4: RV32I translation and measured refinement
+
+[`rv32_solver_core.s`](rv32_solver_core.s) is the maintained assembly source.
+
+- `make rv32_solver.s rv32_solver_gui.s` generates two Ripes-loadable files from it and the shared tables.
+- The CLI file excludes rendering for fair `--iret` measurement; the GUI file includes the renderer.
+- The pinned Ripes assembler does not support `.include` or `.if`, so the Makefile uses the host C preprocessor to select `RENDER=0` or `1` and concatenates the tables.
+
+Both files contain only RV32I instructions.
+
+The parser checks all 14 characters, distinct cubie digits, twist digit ranges, and twist sum.
+
+- It computes the Lehmer permutation rank using repeated addition because RV32I has no `mul`, `div`, or `rem`.
+- The search stores projected ranks in 16-bit depth stacks, obtains move-row pointers by 32-bit loads, and uses `lhu` for each transition.
+
+On a found path it replays all moves through those same transition tables and refuses to print a path that does not end at rank `(0,0)`.
+
+### From C expressions to RV32I operations
+
+The maintained assembly implements the C algorithm. The GCC-generated build is used only for comparison; the Makefile packages `rv32_solver_core.s` and its tables for Ripes.
+
+The orientation parser updates a base-three number in C:
+
+```c
+*ori = (uint16_t) (*ori * 3 + twists[i]);
+```
+
+In the assembly parser, `s1` holds the accumulated orientation rank and
+`t5` holds the next twist. Multiplication by three becomes a shift and two
+additions:
+
+```asm
+slli a3, s1, 1
+add s1, s1, a3
+add s1, s1, t5
+```
+
+The first instruction computes twice the old value in a temporary register.
+The second adds the old value, and the third adds the new base-three digit.
+This needs no multiplication extension.
+
+The pruning condition in C is:
+
+```c
+if (depth + remaining > limit)
+    goto backtrack;
+```
+
+At this point in the assembly, `t4` and `t5` are the current permutation and
+orientation ranks. The following instructions load their byte distances,
+select the larger distance, add the current depth, and branch if the bound
+is smaller than that sum:
+
+```asm
+add t6, s8, t4
+lbu t6, 0(t6)
+add a3, s9, t5
+lbu a3, 0(a3)
+bgeu t6, a3, heuristic_ready
+mv t6, a3
+heuristic_ready:
+add t6, t6, s3
+bltu s2, t6, search_backtrack
+```
+
+`lbu` zero-extends an unsigned byte. The array entries already give the
+lower bounds, so this loop does not recompute cube distances.
+
+The permutation update is a two-dimensional table access in C:
+
+```c
+perm_stack[depth + 1] = perm_next[move][perm_stack[depth]];
+```
+
+The assembly first selects a move row through a table of four-byte pointers.
+It then loads the current two-byte rank from the depth stack, indexes the
+selected row, and stores the resulting rank in the next depth slot:
+
+```asm
+slli t0, t1, 2
+add t2, s10, t0
+lw t2, 0(t2)
+```
+
+Here `t1` is the move index, so shifting by two gives its pointer-table byte
+offset. After the orientation row pointer is also obtained, the permutation
+part continues:
+
+```asm
+slli t3, s3, 1
+add t4, s4, t3
+lhu t5, 0(t4)
+slli t5, t5, 1
+add t2, t2, t5
+lhu t2, 0(t2)
+addi t4, t4, 2
+sh t2, 0(t4)
+```
+
+The first `lhu` reads `perm_stack[depth]`; the second reads a transition-table entry.
+
+- Both use unsigned halfwords, but their roles are different.
+- Shifting by one converts an element index into a two-byte offset.
+- `sh` stores only the low 16 bits in `perm_stack[depth+1]`.
+- Orientation uses the same pattern.
+
+Backtracking changes `s3` by minus one and resumes the parent's saved move cursor, rather than undoing all cube stickers or calling a recursive function.
+
+### Registers and the explicit depth stack
+
+These assignments describe the search phase. Later output code reuses
+`s0` and `s1`, and temporary registers change roles between fragments.
+
+| Assembly registers | C meaning during search | Representation |
+| --- | --- | --- |
+| `s0`, `s1` | `start_perm`, `start_ori` | Root ranks retained for each new bound and path replay |
+| `s2`, `s3` | `limit`, `depth` | Current bound and number of moves already taken |
+| `s4`, `s5` | `perm_stack`, `ori_stack` base addresses | 12 unsigned halfwords each: 24 B per array |
+| `s6`, `s7` | `next_move`, `path` base addresses | 12 B of move cursors and 11 B of chosen moves |
+| `s8`, `s9` | `perm_distance`, `ori_distance` base addresses | One byte per projected rank |
+| `s10`, `s11` | `perm_next_rows`, `ori_next_rows` base addresses | Nine four-byte row pointers per component |
+| `t0`, `t1` at `search_choice` | Address of `next_move[depth]`, candidate move | Reused rather than loaded again |
+
+The search depth arrays occupy `24+24+12+11=71` bytes. These arrays are
+separate from the architectural register `sp`: they encode the algorithm's
+saved states, not nested function-call frames. Row pointers use `lw`, ranks
+use `lhu`/`sh`, and move indices and heuristic distances use `lbu`/`sb`.
+Keeping the element width explicit explains each shift in the table access.
+
+Measurements use the pinned Ripes `RV32_ISS --iret` and renderer-off linked
+`.text`, with the same input for each row:
+
+The assembly is linked with GNU `ld --no-relax` so its instruction sequence matches the Ripes source. On the sample, both retire 17,215,301 instructions. A relaxed assembly link changes the execution count and is excluded here. The C comparison uses the default optimized link.
+
+| Build | Sample `21345671111111` | Hardest `54721631111111` | `.text` |
+| --- | ---: | ---: | ---: |
+| Initial assembly search loop | 17,995,131 | 49,206,635 | 888 B |
+| Reuse the loaded `next_move` and its address | 17,215,301 | 47,074,059 | 880 B |
+| Final C algorithm, GCC `-O2` | 20,672,648 | 56,528,540 | 1,148 B |
+
+- **Search-loop refinement:**
+  - The refinement removes a redundant address calculation and byte load from each visit to `search_choice`.
+  - On a depth-first search those visits repeat often, so two static instructions removed from the loop save millions of retired instructions.
+- **Target validation:**
+  - The current run exercised **all 2,644 exact-distance-11 states** on `RV32_ISS` with rendering off.
+  - Every case exited successfully and returned 11 moves.
+- **Instruction counts:**
+  - The smallest count was 10,370,157, the median was 14,110,000, and the maximum was **47,074,059** instructions at `54721631111111`.
+  - All are below the 50,000,000 worst-case limit.
+
+The full per-state log is retained in `evidence/depth11-rv32-iss.tsv` in the fork; the run took 1,708.5 seconds.
+
+The sample returns `R B' D2 R' B R' B' R D2 R B`. The solved and one-turn cases, including their pipeline counts, are listed under **Reproducing the representative tests**. These examples check target behavior; H3 supplies the full-domain optimality check.
+
+## LED Matrix: visualizing the solution
+
+The GUI build is designed to drive a 35×25 LED Matrix as a six-face unfolded net.
+
+- The four middle faces are Left, Front, Right, Back; Up sits above Front and Down below Front.
+- Each of the 24 facelets occupies 4×3 pixels.
+- Four 8-pixel-wide faces plus three separator columns use 35 columns; three 6-pixel-high face rows plus two separator rows use 20 rows, leaving five spare rows.
+- For pixel coordinates `(x,y)`, the assembly stores a 24-bit RGB word at `LED_MATRIX_0_BASE + 4×(y×LED_MATRIX_0_WIDTH+x)`. It checks `LED_MATRIX_0_WIDTH≥35` and `LED_MATRIX_0_HEIGHT≥20`.
+
+Six colors remain distinct: Up white, Left orange, Front green, Right red, Back blue, Down yellow.
+
+The renderer starts from the parsed input and applies each move in the returned path to the seven cubies before redrawing.
+
+- A 24-entry facelet table selects each physical corner and one of its three sticker axes.
+- The cyclic axis order was checked against `solver.c`'s `R`, `B`, and `D` source and twist maps.
+- No animation frame is prerecorded.
+
+The GUI run on October 2, 2026 used a 35×25 LED Matrix:
+
+- **Pausing the animation:**
+  - A breakpoint at `0x47c` points to `lw ra, 12(sp)` after the renderer call in this build.
+  - Because the pipeline can stop before the call finishes, execution was advanced before capturing the intermediate net.
+- **Observed result:**
+  - The intermediate net differs from the input.
+  - After the remaining moves, all six faces show their solved colors.
+  - A 6-pixel LED setting keeps the complete net, including the blue Back face, visible.
+
+I/O settings can change assembled addresses; locate the instruction again when reproducing the pause.
+
+The following crops show **input → intermediate state → solved state**. Each keeps the complete six-face net; the full captures remain linked below.
+
+![Ripes LED Matrix showing the scrambled sample input before the first move](evidence/crops/led-initial.png)
+
+**Initial:** compare the mixed stickers with the solved net below; this is the sample input before the first move.
+
+[Full capture](evidence/ripes-led-initial.png)
+
+![Ripes LED Matrix during the sample solution, with colors changed from the input](evidence/crops/led-intermediate.png)
+
+**Intermediate:** the changed sticker arrangement shows that the returned moves are being applied to the cube state.
+
+[Full capture](evidence/ripes-led-intermediate.jpg)
+
+![Ripes LED Matrix after all sample moves, with all six solved faces fully visible](evidence/crops/led-final.png)
+
+**Solved:** all six faces are uniform, including the blue Back face at the right.
+
+[Full capture](evidence/ripes-led-final-full.jpg)
+
+## Five-stage pipeline: following one instruction
+
+A five-stage processor splits instruction execution into the following work:
+
+| Stage | Name | Main work |
+| --- | --- | --- |
+| IF | Instruction Fetch | Fetch an instruction word using the program counter (PC). |
+| ID | Instruction Decode | Decode its fields, read source registers, and form the immediate. |
+| EX | Execute | Perform arithmetic, calculate a load/store address, or resolve a branch. |
+| MEM | Memory Access | Read or write data memory for a load or store. |
+| WB | Write Back | Write a result to a destination register when required. |
+
+Different instructions can occupy different stages in the same cycle.
+
+- After filling the pipeline, an ideal sequence can finish one instruction per cycle, but dependencies and branches can insert stalls or flushes.
+- This improves throughput; it does not necessarily reduce the latency of a single instruction.
+
+The following trace uses Ripes' five-stage RV32I model with forwarding and hazard detection, rather than the faster instruction-set simulator.
+
+### From a C array update to two loads and one store
+
+The purpose of this C statement is to record the permutation after one move:
+
+```c
+perm_stack[depth + 1] = perm_next[move][perm_stack[depth]];
+```
+
+Stage 4 gives the complete translation. Here, assume the move row has already
+been selected into `t2`, `s3` holds `depth`, and `s4` points to the
+permutation stack. First, read the current permutation rank:
+
+```asm
+slli t3, s3, 1
+add t4, s4, t3
+lhu t5, 0(t4)
+```
+
+Each rank is a `uint16_t` occupying two bytes. Thus `depth << 1` is the
+stack byte offset. The first `lhu` reads the current rank into `t5`;
+it does not apply a move. Next, use that rank to index the selected move row:
+
+```asm
+slli t5, t5, 1
+add t2, t2, t5
+lhu t2, 0(t2)
+```
+
+The table entries are also two-byte ranks. The shift converts a rank into a
+byte offset; the second `lhu` reads the new rank produced by the move.
+Finally, write that result to the next depth slot:
+
+```asm
+addi t4, t4, 2
+sh t2, 0(t4)
+```
+
+Adding two advances from `perm_stack[depth]` to `perm_stack[depth + 1]`.
+`sh` writes the low 16 bits of `t2` to memory. Its address is calculated
+in EX and its memory write occurs in MEM; it has no destination register
+and does not enable register writeback. This store explanation follows the
+source and instruction semantics; the screenshots below trace the first load.
+
+### Decoding the current-rank load
+
+The instruction at `0x230` is `lhu t5, 0(t4)`. Ripes displays the
+machine word `0x000edf03`. It uses the I-type format:
+
+| Field | Bits | Value | Meaning |
+| --- | --- | --- | --- |
+| Immediate | 31–20 | `000000000000` | Offset 0 |
+| rs1 | 19–15 | `11101` (29) | Base register x29, alias t4 |
+| funct3 | 14–12 | `101` | Unsigned halfword load |
+| rd | 11–7 | `11110` (30) | Destination x30, alias t5 |
+| opcode | 6–0 | `0000011` | Load instruction |
+
+The fields reconstruct the observed word:
+
+```text
+(0 << 20) | (29 << 15) | (5 << 12) | (30 << 7) | 0x03
+= 0x000edf03
+```
+
+This instruction has one source register and no rs2 operand.
+
+- `lhu` reads a 16-bit halfword and zero-extends it to the 32-bit destination.
+- The current stack in this assembled build starts at `0x1000001d`; at depth zero, the loaded rank is 720 (`0x02d0`), yielding `0x000002d0` in `t5`.
+- This address is not halfword-aligned.
+
+The recorded Ripes run handles this access; RV32I execution environments may instead trap on misaligned loads, so this trace should not be taken as a portability guarantee for physical hardware.
+
+### Following one load through all five stages
+
+The trace follows `lhu t5, 0(t4)` at `0x230`. IF–EX captures were taken on October 3; MEM, WB, and the register result were captured on October 2 using the same renderer-off build. The circuit crops focus on the component discussed at each stage. Expand **Cycle and instruction evidence** to check the cycle counter and the **Stage** column from the same capture; the full screenshots are also linked.
+
+#### 1. Instruction Fetch (IF) — cycle 768
+
+- **Instruction fetch:**
+  - The Instruction memory table marks `0x230` as IF.
+  - The fetched word is `0x000edf03`; the sequential next PC is `0x234`.
+- **Reading the circuit:**
+  - This word encodes the instruction, not the loaded rank.
+  - ID still contains the preceding `add`; its decode signals belong to that instruction.
+
+![Ripes cycle 768: instruction 0x230 in IF, fetched word 0x000edf03](evidence/crops/pipeline-if.png)
+
+**IF:** read `0x000edf03` at the Instruction memory output; it is the instruction word for the load at `0x230`.
+
+<details>
+<summary>Cycle and instruction evidence</summary>
+
+![Cycle counter and instruction-stage table from the same capture](evidence/crops/pipeline-if-context.png)
+
+[Full capture](evidence/ripes-pipeline-if.jpg)
+
+</details>
+
+#### 2. Instruction Decode (ID) — cycle 769
+
+- **Decoded fields:**
+  - The Decode block identifies LHU.
+  - Source `0x1d` selects x29 (`t4`); destination `0x1e` selects x30 (`t5`).
+  - The immediate block supplies zero.
+- **Pending base address:**
+  - The preceding `add` is still producing `t4`. The register-file read is not necessarily the value the load will use in EX.
+
+![Ripes cycle 769: instruction 0x230 in ID, LHU and register fields decoded](evidence/crops/pipeline-id.png)
+
+**ID:** inspect Decode and Imm: LHU selects source x29 (`0x1d`), destination x30 (`0x1e`), and offset zero.
+
+<details>
+<summary>Cycle and instruction evidence</summary>
+
+![Cycle counter and instruction-stage table from the same capture](evidence/crops/pipeline-id-context.png)
+
+[Full capture](evidence/ripes-pipeline-id.jpg)
+
+</details>
+
+#### 3. Execution (EX) — cycle 770
+
+The ALU calculates the effective address, not the loaded value.
+
+- **ALU inputs and result:**
+  - Operand 1 receives the preceding `add`'s result through the forwarding multiplexer.
+  - Operand 2 is the immediate zero.
+  - Their sum is `0x1000001d`, even though an older value remains visible at the ID/EX input.
+- **Dependency:**
+  - This is forwarding of the base address. The rank 720 will only become available after the memory read.
+
+![Ripes cycle 770: instruction 0x230 in EX, forwarded base plus zero gives 0x1000001d](evidence/crops/pipeline-ex.png)
+
+**EX:** follow the forwarding multiplexer into the ALU; base `0x1000001d` plus zero produces the effective address.
+
+<details>
+<summary>Cycle and instruction evidence</summary>
+
+![Cycle counter and instruction-stage table from the same capture](evidence/crops/pipeline-ex-context.png)
+
+[Full capture](evidence/ripes-pipeline-ex.jpg)
+
+</details>
+
+#### 4. Data Memory Access (MEM) — cycle 771
+
+Enable **View → Show processor signal values** and inspect the Data memory block.
+
+- **Memory read:**
+  - Address: `0x1000001d`, the `p_stack` base at depth zero.
+  - Read output: `0x000002d0` (720).
+  - `Wr en` is red (false), so the stack is unchanged.
+- **Other visible signals:**
+  - There is no separate visible `Rd en` pin; LHU and the read output identify the access.
+  - WB contains an older instruction. Its writeback selection does not yet belong to this load.
+
+![Ripes cycle 771: current-rank load in MEM, address 0x1000001d, read data 0x2d0, memory write disabled](evidence/crops/pipeline-mem.png)
+
+**MEM:** inspect Data memory: address `0x1000001d` returns `0x000002d0` (720), while the red `Wr en` indicates no write.
+
+<details>
+<summary>Cycle and instruction evidence</summary>
+
+![Cycle counter and instruction-stage table from the same capture](evidence/crops/pipeline-mem-context.png)
+
+[Full capture](evidence/ripes-signals-mem.jpg)
+
+</details>
+
+#### 5. Write Back (WB) — cycle 772, result visible at 773
+
+- **Writeback selection:**
+  - The multiplexer selects memory data `0x000002d0`, not the ALU address `0x1000001d`.
+  - Destination `0x1e` selects x30 (`t5`).
+- **Pipeline overlap:**
+  - MEM contains the load-use stall bubble. Its zero-valued signals are not the previous cycle's read output.
+  - The next-clock image confirms the value written to `t5`.
+
+![Ripes cycle 772: WB selects loaded memory data 0x2d0 for destination x30](evidence/crops/pipeline-wb.png)
+
+**WB:** the writeback multiplexer selects `0x000002d0` for destination x30 (`0x1e`); this is the loaded rank, not its address.
+
+<details>
+<summary>Cycle and instruction evidence</summary>
+
+![Cycle counter and instruction-stage table from the same capture](evidence/crops/pipeline-wb-context.png)
+
+[Full capture](evidence/ripes-signals-wb.jpg)
+
+</details>
+
+The register file's `Wr En` indicator is green at cycle 772. This write port is controlled by WB even though the register file is drawn beside ID. The dependent `slli` receives the loaded value through forwarding and computes `0x000005a0` (`720×2`) in EX.
+
+![Ripes cycle 772: register write enabled and the dependent shift computes byte offset 0x5a0](evidence/crops/pipeline-regwrite.png)
+
+**Write enable and forwarding:** the green register-file `Wr En` accompanies the load in WB; the dependent shift in EX produces byte offset `0x000005a0`.
+
+<details>
+<summary>Cycle and instruction evidence</summary>
+
+![Cycle counter and instruction-stage table from the same capture](evidence/crops/pipeline-regwrite-context.png)
+
+[Full capture](evidence/ripes-signals-regwrite.jpg)
+
+</details>
+
+> **Info**
+>
+> Signals belong to the instruction currently occupying each pipeline stage.
+> A load in WB, an arithmetic instruction in EX, and a stall bubble in MEM
+> can coexist. The correct trace follows one instruction across clock cycles
+> rather than assigning every visible control wire to that instruction.
+At cycle 773, x30 (`t5`) contains `0x000002d0` (720), and the dependent `slli` is in MEM. This is the current permutation rank. The move's transition lookup occurs later at `0x23c`, in `lhu t2, 0(t2)`.
+
+![Ripes at cycle 773: x30 (t5) contains the loaded value 0x000002d0](evidence/crops/pipeline-result.png)
+
+**Register result:** at cycle 773, the highlighted x30 (`t5`) row contains `0x000002d0`, confirming that rank 720 was written.
+
+<details>
+<summary>Cycle and instruction evidence</summary>
+
+![Cycle counter and instruction-stage table from the same capture](evidence/crops/pipeline-result-context.png)
+
+[Full capture](evidence/ripes-pipeline-result.jpg)
+
+</details>
+
+### Why the next shift waits for the load
+
+The current-rank load is immediately followed by a dependent instruction:
+
+```asm
+lhu t5, 0(t4)
+slli t5, t5, 1
+```
+
+The shift needs the load result as its EX operand.
+
+- A load obtains that result from memory in MEM, too late for the next instruction's EX stage in the same cycle.
+- The hazard unit therefore inserts one stall cycle.
+- Forwarding then supplies the loaded value to the shift without waiting for another register read.
+
+Forwarding removes many dependencies' delays, but cannot remove this immediate load-use delay in this five-stage model.
+
+The images show the one-cycle delay: at cycle 771 the load is in MEM and the shift waits in ID; at cycle 772 the load is in WB and the shift reaches EX. Its result, `0x000005a0` (1,440), is a byte offset, not a new permutation rank.
+
+The startup timeline provides another example: `lbu x29, 0(x5)` followed by `addi x30, x29, -49`. The dependent instruction has a dash before EX while the load advances.
+
+![Ripes Pipeline diagram showing five stages and a parser load-use stall](evidence/crops/pipeline-timeline.png)
+
+**Load-use stall:** follow `lbu x29, 0(x5)` and the next `addi`; the dash at cycle 10 delays the dependent instruction before EX.
+
+[Full capture](evidence/ripes-pipeline-timeline.jpg)
+
+## Reproducing the representative tests
+
+The following renderer-off results are retained in
+[`evidence/target-tests.txt`](evidence/target-tests.txt)
+and [`evidence/pipeline-sample.txt`](evidence/pipeline-sample.txt).
+The table separates retired instructions from pipeline cycles.
+
+| Input | Purpose | Returned path length | Retired instructions | `RV32_5S` cycles |
+| --- | --- | ---: | ---: | ---: |
+| `12345671111111` | Already solved | 0 | 586 | 783 |
+| `25314672313211` | One-turn example | 1 (`R'`) | 784 | 1,041 |
+| `21345671111111` | Required vector | 11 | 17,215,301 | 21,896,137 |
+| `54721631111111` | Largest observed count among all distance-11 inputs | 11 | 47,074,059 | Not measured here |
+
+All recorded cases exited with code zero. An equally short alternative move
+sequence is valid; the decisive checks are its length and replay to solved.
+The full-domain host checker and the 2,644-case target sweep answer different
+questions: the former establishes optimality over all states, while the
+latter measures target cost over the complete hardest-distance layer.
+
+From the repository directory, build the host solver and packaged assembly:
 
 ```sh
-make rv32_c
+make rv32_c rv32_solver.s rv32_solver_gui.s
+./rv32_c 12345671111111
+./rv32_c 25314672313211
 ./rv32_c 21345671111111
-make check-rv32-c  # exhaustive check; takes several minutes
 ```
 
-`rv32_c.c` keeps only the nine move transitions for permutation and orientation
-and their two exact projected-distance tables. `make rv32_c` generates those read-only
-tables from `solver.c` into `rv32_tables.h`; together they occupy 109,611 bytes.
-The solver uses an explicit stack and iterative-deepening A* search, with no
-heap or recursion. The exhaustive host check compares all 3,674,160 states
-against a full BFS oracle and applies every returned path to verify it solves
-the cube. This is the C design for a later RV32I translation, not a Ripes
-assembly program.
-
-The search core also compiles without a C library for the RV32I target:
+The first solver invocation prints a blank solution line, the second prints `R'`, and
+the third prints the 11-move sample path. These host commands verify answers;
+they do not measure RV32I instructions. To measure the packaged sample on
+this Mac, run:
 
 ```sh
-riscv64-elf-gcc -O2 -ffreestanding -DRV32_FREESTANDING \
-  -march=rv32i -mabi=ilp32 -c rv32_c.c -o /tmp/rv32_c.o
-riscv64-elf-size -A /tmp/rv32_c.o
+RIPES_BIN='/Users/erichuang/文件/NCKU成大資工/計算機結構/hw1/tools/Ripes-v2.2.6-106-g5b8a616-mac-universal2.app/Contents/MacOS/Ripes'
+"$RIPES_BIN" --mode cli --src rv32_solver.s -t asm \
+  --proc RV32_ISS --iret --exectime --timeout 60000
 ```
 
-With GCC 16.2.0, the object has 109,628 bytes of `.rodata`, zero `.data` and
-`.bss`, and no unresolved symbols or multiply/divide helper calls. The host
-command-line interface is excluded in this build; `rv32_solve_input` is the
-freestanding entry point.
+The sample is stored in `input_state` inside the assembly, not supplied as a CLI cube argument.
 
-### Reading the 14-digit input
+- For another input, change that 14-character string in Ripes Editor.
+- Select the five-stage RV32I processor to follow the pipeline; use the renderer-off `rv32_solver.s` for the instruction walkthrough.
+- In the current assembled build, stop at `0x230`, then clock until the load occupies MEM and WB.
+- The cycle-768 through cycle-773 sequence assumes a reset followed by the unmodified sample run.
 
-The program receives one 14-digit code with no spaces. For explanation, split
-it into two groups:
+Peripheral settings or source changes may shift addresses, so locate the actual `lhu t5, 0(t4)` instruction when reproducing it.
 
-```diagram
-2134567 1111111
-└── P ─┘ └── O ─┘
-  cubies   twists
-```
+For animation, load `rv32_solver_gui.s`, instantiate a 35×25 LED Matrix, and
+use a 6-pixel LED display size to keep all six faces visible. Run the sample
+through completion and compare its final net with the saved solved capture.
+Rendering adds instructions and cycles, so the animation run is not the
+renderer-off count used in the performance table.
 
-Imagine seven numbered seats and seven students. A position is a seat fixed in
-space; a cubie is the physical corner that can move to another seat. In the
-solved cube, cubie 1 sits in position 1, cubie 2 in position 2, and so on.
-The real cube has no printed numbers; `0–7` are labels used only by this solver.
+## Development revisions
 
-#### Step 1: Hold the cube in one direction
+- **Memory measurements:** the 64 KiB and 1 MiB captures replaced the initial estimates. The projection changed, but complete BFS remained too large for the target.
+- **C and assembly measurements:** the readable C refactor changed GCC's instruction count, so the comparison was rebuilt and remeasured. A temporary copy reconstructed the earlier two-instruction reload for the refinement table.
+- **Verification and screenshots:** the host checker and target CLI cases were rerun after those code edits. The October 2 LED and MEM/WB captures were followed by IF/ID/EX captures on October 3.
 
-Keep `FRONT` facing you and `UP` pointing upward. Position `0` is the corner
-nearest the upper-left of the front face. It is an anchor for describing the
-other corners; the physical cubie is not glued in place.
+Public publication and the final submission snapshot remain pending.
 
-```diagram
-                              BACK
-                    ·───────────────·
-                   ╱               ╱│
-                  ╱        UP     ╱ │
-                 ╱               ╱  │
-              [0]───────────────·   │
-               │                │   │
-               │     FRONT      │ R │
-               │                │   ·
-               │                │  ╱
-               │                │ ╱
-               │                │╱
-               ·────────────────·
-```
+## References
 
-`R` marks the narrow `RIGHT` face.
-
-#### Step 2: Separate the front and back layers
-
-A 2×2×2 cube has only corner cubies. Looking from the fixed direction, four
-corner positions touch the front face and four touch the back face. Each
-bracketed number below names one whole corner, not one colored sticker:
-
-```diagram
- FRONT LAYER                          BACK LAYER
-
- upper-left   upper-right             upper-left   upper-right
-     [0]────────[1]                       [7]────────[4]
-      │          │                         │          │
-      │          │       front ↔ back      │          │
-     [3]────────[2]                       [6]────────[5]
- down-left    down-right               down-left    down-right
-```
-
-The front layer runs clockwise from its upper-left corner as `0, 1, 2, 3`.
-The back layer is drawn as if seen through the cube from the front: `7` is
-upper-left, followed clockwise by `4, 5, 6`.
-
-#### Step 3: Join the two layers into positions 0–7
-
-Slide the back square up and to the right, the same direction the cube recedes
-in Step 1, to get the complete 2.5D position map. The back edges are drawn
-through the front face rather than hidden behind it:
-
-```diagram
-                           BACK
-                      [7]────────[4]
-                     ╱ │        ╱ │
-                  [0]──│─────[1]  │
-                   │   │      │   │
-                   │  [6]─────│──[5]
-                   │ ╱        │ ╱
-                  [3]────────[2]
-                      FRONT
-```
-
-The seven characters of `P` describe positions `1, 2, 3, 4, 5, 6, 7` in that
-order; the anchor at position `0` is left out.
-
-#### Step 4: Put the cubies into those positions
-
-Compare the position map on the left with the filled cube on the right. Read
-`P = 2134567` from left to right to fill the positions. The arrows below the
-figure identify the two positions that change.
-
-```diagram
- POSITION MAP                             AFTER P = 2134567
- (fixed seats)                            (cubies now in seats)
-
-     [7]────────[4]                           [7]────────[4]
-    ╱ │        ╱ │                           ╱ │        ╱ │
- [0]──│─────[1]  │                        [0]──│─────[2]  │
-  │   │      │   │                         │   │      │   │
-  │  [6]─────│──[5]                        │  [6]─────│──[5]
-  │ ╱        │ ╱                           │ ╱        │ ╱
- [3]────────[2]                           [3]────────[1]
-     FRONT                                    FRONT
-
- position:     1 2 3 4 5 6 7
- P says:       2 1 3 4 5 6 7
-               │ │ └───────── cubies 3–7 stay in their matching seats
-               │ └─────────── put cubie 1 in position 2: [2] becomes [1]
-               └───────────── put cubie 2 in position 1: [1] becomes [2]
-```
-
-So the first two digits, `21`, exchange the two corners on the front-right
-edge. The remaining digits, `34567`, leave the other five movable corners
-where they were. `P` must contain every digit from `1` through `7` exactly
-once; otherwise a cubie would be missing or duplicated.
-
-The seven seats named by `P` are:
-
-| Position | Corner of the cube |
-| :---: | :--- |
-| 1 | front, upper, right |
-| 2 | front, down, right |
-| 3 | front, down, left |
-| 4 | back, upper, right |
-| 5 | back, down, right |
-| 6 | back, down, left |
-| 7 | back, upper, left |
-
-The second group, `O = 1111111`, describes the twist of the cubie in each of
-those same seven positions:
-
-| Digit | Meaning |
-| :---: | :--- |
-| 1 | not twisted |
-| 2 | twisted by +120° |
-| 3 | twisted by −120° |
-
-Here every orientation digit is `1`, so the two corners change places without
-being twisted. For a valid cube, convert orientation digits to `0`, `1`, and
-`2`; their sum must be divisible by three. The solved code is
-`12345671111111`. `make check` uses the exchanged-corner example above.
-
-## Reading the solution
-
-```sh
-$ ./solver 21345671111111
-B' R' D2 R' B R B' R D2 B R'
-```
-
-Each token is one face turn. Apply them left to right; after the last one the
-cube is solved.
-
-| Token | Meaning |
-| :---: | :--- |
-| `R` | turn the `RIGHT` face 90° clockwise |
-| `B` | turn the `BACK` face 90° clockwise |
-| `D` | turn the `DOWN` face 90° clockwise |
-
-Clockwise means clockwise as seen by someone looking directly at that face from
-outside the cube, so you have to walk around to the back to read `B` and look up
-from underneath to read `D`. Two suffixes modify a turn:
-
-| Suffix | Meaning |
-| :---: | :--- |
-| none | 90° clockwise |
-| `'` | 90° counterclockwise, the inverse |
-| `2` | 180°, direction does not matter |
-
-`R`, `B`, and `D` are the only faces that appear, because turning `UP`, `FRONT`,
-or `LEFT` would move the anchor at position `0`. A turn counts as one move
-whichever suffix it carries, which is the half-turn metric; under that metric no
-position needs more than 11 moves. Solving an already-solved cube prints an
-empty line.
-
-See [`report.md`](report.md) for the model, algorithm, diagrams, and Frama-C
-validation notes.
+- [Lab1: RV32I Simulator](https://hackmd.io/@sysprog/H1TpVYMdB)
+- [Assignment 1: Optimizations and RISC-V Assembly](https://hackmd.io/@sysprog/2026-arch-homework1)
+- [RISC-V Instruction Set Specifications](https://msyksphinz-self.github.io/riscv-isadoc/html/index.html)
+- [Learning RISC-V Assembly, Lesson 6: Pseudo-instruction List](https://www.cnblogs.com/sureZ-learning/p/18402878)
+- [RISCV Assembly Tutorial: Practice with LED and Switch on Simulator (starting at 3:03)](https://youtu.be/rlB8aeXDpc0?si=oHRgyLA-vuF7Erqb&t=183)
