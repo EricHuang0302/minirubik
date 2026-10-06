@@ -1,4 +1,4 @@
-# Mini-Rubik on RV32I: Development Notes
+# Computer Architecture — Homework 1
 
 ## AI Tools Usage
 
@@ -7,6 +7,22 @@ OpenAI Codex was used for:
 - Conceptual Explanation and Code debugging
 - Code Annotation
 - Translation and Technical Writing (Polishing)
+
+## Assignment Overview
+
+**Topic: Optimizations and RISC-V Assembly — Mini-Rubik on Ripes.**
+
+[Read the official assignment description](https://hackmd.io/@sysprog/2026-arch-homework1) for the complete requirements and submission instructions.
+
+Phase 1 starts with the supplied C solver for the 2×2×2 Rubik’s Cube and requires an optimal solver that runs on Ripes:
+
+- Analyze the original program and measure the simulator's memory overhead and execution rate.
+- Choose a state representation and search algorithm that preserve shortest solutions, then improve the C implementation.
+- Implement the result in hand-written RV32I assembly. Static data must fit within 128 KiB, and every distance-11 input must stay at or below 50 million retired instructions on `RV32_ISS`, with rendering disabled.
+- Animate the solver's actual moves on a 35×25 LED Matrix and explain instruction execution through IF, ID, EX, MEM, and WB.
+- Document the reasoning, measurements, and validation in an English HackMD note, and submit the repository commit through a Git tag and a note revision URL.
+
+Phase 2 is an interview about the submitted program and the reasoning behind it. The sections below document the Phase 1 implementation and evidence.
 
 This repository contains the C and RV32I implementation and evidence for Computer Architecture Homework 1. It is forked from [sysprog21/minirubik](https://github.com/sysprog21/minirubik); the original analysis remains in [report.md](report.md).
 
